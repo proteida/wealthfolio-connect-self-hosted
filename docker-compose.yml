@@ -1,0 +1,88 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+    volumes:
+      - wealthfolio_connect_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  connect:
+    build:
+        context: .
+        dockerfile: Dockerfile
+    image: wealthfolio-connect-self-hosted:local
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    # Local-only by default.
+    # Change to "8080:8080" only if you intentionally want LAN access.
+    ports:
+      - "127.0.0.1:${HOST_PORT:-8080}:8080"
+
+    environment:
+      # Required
+      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      CONNECT_AUTH_PUBLISHABLE_KEY: ${CONNECT_AUTH_PUBLISHABLE_KEY:?Set CONNECT_AUTH_PUBLISHABLE_KEY in .env}
+      SELF_HOSTED_USER_EMAIL: ${SELF_HOSTED_USER_EMAIL:?Set SELF_HOSTED_USER_EMAIL in .env}
+
+      # Server
+      SERVER_PORT: "8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,tauri://localhost,https://tauri.localhost}
+      STATIC_TOKEN_MODE: ${STATIC_TOKEN_MODE:-false}
+      TOKEN_TTL_SECONDS: ${TOKEN_TTL_SECONDS:-3600}
+      SYNC_INTERVAL_MINUTES: ${SYNC_INTERVAL_MINUTES:-240}
+
+      # Futu OpenD
+      FUTU_HOST: ${FUTU_HOST:-}
+      FUTU_PORT: ${FUTU_PORT:-11111}
+      FUTU_CONNECTION_ID: ${FUTU_CONNECTION_ID:-wealthfolio}
+      FUTU_TRADE_PASSWORD: ${FUTU_TRADE_PASSWORD:-}
+
+      # Interactive Brokers Gateway / TWS
+      IBKR_HOST: ${IBKR_HOST:-}
+      IBKR_PORT: ${IBKR_PORT:-4001}
+      IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-1}
+      IBKR_ACCOUNT_ID: ${IBKR_ACCOUNT_ID:-}
+
+      # Binance
+      BINANCE_API_KEY: ${BINANCE_API_KEY:-}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
+      BINANCE_TRADE_SYMBOLS: ${BINANCE_TRADE_SYMBOLS:-}
+
+      # OKX CEX
+      OKX_API_KEY: ${OKX_API_KEY:-}
+      OKX_API_SECRET: ${OKX_API_SECRET:-}
+      OKX_PASSPHRASE: ${OKX_PASSPHRASE:-}
+
+      # OKX Web3 / DEX
+      OKX_WEB3_API_KEY: ${OKX_WEB3_API_KEY:-}
+      OKX_WEB3_API_SECRET: ${OKX_WEB3_API_SECRET:-}
+      OKX_WEB3_PASSPHRASE: ${OKX_WEB3_PASSPHRASE:-}
+      DEFI_WALLETS: ${DEFI_WALLETS:-[]}
+
+      # Bitget
+      BITGET_API_KEY: ${BITGET_API_KEY:-}
+      BITGET_API_SECRET: ${BITGET_API_SECRET:-}
+      BITGET_PASSPHRASE: ${BITGET_PASSPHRASE:-}
+
+      # Hyperliquid (public wallet address only)
+      HYPERLIQUID_WALLET: ${HYPERLIQUID_WALLET:-}
+
+      # TON Center API v3 (native TON + Jetton balances and history)
+      TONCENTER_API_KEY: ${TONCENTER_API_KEY:-}
+      TON_WALLETS: ${TON_WALLETS:-}
+
+volumes:
+  wealthfolio_connect_postgres:
