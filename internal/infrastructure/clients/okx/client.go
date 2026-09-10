@@ -30,6 +30,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/brokerage"
+	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/repository"
 	domainsync "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/sync"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/cexcommon"
 )
@@ -38,6 +39,23 @@ import (
 type HTTPDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
+
+func pairBase(instID string) string {
+	parts := strings.SplitN(instID, "-", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	return strings.ToUpper(parts[0])
+}
+
+func pairQuote(instID string) string {
+	parts := strings.SplitN(instID, "-", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	return strings.ToUpper(parts[1])
+}
+
 
 // Credentials are the per-request fields used to sign every authenticated
 // call. Both the CEX and Web3 products use the same shape.
@@ -58,6 +76,51 @@ type CEXClient struct {
 	baseURL string
 	creds   Credentials
 	http    HTTPDoer
+	// history is the durable source of saved fills (overlap detection).
+	// cursors is the durable backfill state (resume position + proven
+	// completion). fillsAfter / pendingCursor are tentative progress: they
+	// persist only in SnapshotCommitted, after the data they cover is
+	// stored. An uncommitted tentative is dropped on the next Fetch so a
+	// failed write replays rows instead of skipping them.
+	history             repository.ActivityRepository
+	cursors             repository.CursorRepository
+	fillsAfter          string
+	fillsAfterCommitted bool
+	pendingCursor       repository.SyncCursor
+	pendingDirty        bool
+}
+
+// fillsScope is the cursor-store scope for the CEX fills backfill.
+const fillsScope = "okx-fills"
+
+// ConfigureHistory sets the durable source of saved fills. Call during
+// construction, before starting synchronization.
+func (c *CEXClient) ConfigureHistory(history repository.ActivityRepository) {
+	c.history = history
+}
+
+// ConfigureCursors sets the durable backfill state. Call during
+// construction, before starting synchronization.
+func (c *CEXClient) ConfigureCursors(cursors repository.CursorRepository) {
+	c.cursors = cursors
+}
+
+// SnapshotCommitted persists tentative backfill progress after the snapshot
+// it covers is stored. Failed persistence leaves the durable cursor behind
+// and drops the tentative, so the next run replays the same rows instead of
+// skipping them.
+func (c *CEXClient) SnapshotCommitted() {
+	if !c.pendingDirty {
+		return
+	}
+	c.pendingDirty = false
+	c.fillsAfterCommitted = true
+	if c.cursors == nil {
+		return
+	}
+	// Best-effort: a failed write only replays rows on the next run, which
+	// upserts absorb idempotently.
+	_ = c.cursors.Set(context.Background(), c.pendingCursor) //nolint:errcheck // replay-safe
 }
 
 // NewCEX builds a CEX client. Pass nil http to use a default 15s client.
@@ -116,7 +179,7 @@ func (c *CEXClient) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error
 			}
 			snap.Balances = append(
 				snap.Balances, cexcommon.Balance{
-					Asset:    strings.ToUpper(a.Ccy),
+					Asset:    cexcommon.NormalizeAsset(a.Ccy),
 					Quantity: qty,
 					PriceUSD: price,
 					USDValue: usd,
@@ -126,14 +189,27 @@ func (c *CEXClient) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error
 	}
 
 	// Fetch recent trade fills (best-effort; failures don't block the snapshot).
+	// Successful pages are retained even when older history remains pending.
 	trades, err := c.getFillsHistory(ctx)
 	if err == nil {
 		snap.Trades = trades
 		snap.ActivitiesFetched = true
+	} else if errors.Is(err, errFillsPending) {
+		snap.Trades = trades
 	}
 
 	return cexcommon.Translate("okx", "OKX", snap), nil
 }
+
+// errFillsPending signals older fills remain for a later sync. The returned
+// trades are still usable; ActivitiesFetched stays false until the
+// accessible range is exhausted.
+var errFillsPending = errors.New("okx: more fills remain for a later sync")
+
+// fillsPageSize is the fills-history page width we request; fillsPageBudget
+// bounds per-run requests while the in-memory cursor advances the backfill.
+const fillsPageSize = 100
+const fillsPageBudget = 3
 
 // getFillsHistory retrieves the recent 90-day trade fills from OKX.
 // OKX /api/v5/trade/fills-history returns up to 100 fills per page; we
@@ -145,6 +221,8 @@ func (c *CEXClient) getFillsHistory(ctx context.Context) ([]cexcommon.Trade, err
 		Side   string `json:"side"`
 		FillPx string `json:"fillPx"`
 		FillSz string `json:"fillSz"`
+		Size   string `json:"sz"`
+		AccSz  string `json:"accFillSz"`
 		Fee    string `json:"fee"` // negative means fee charged
 		FeeCcy string `json:"feeCcy"`
 		TS     string `json:"ts"`
@@ -156,43 +234,164 @@ func (c *CEXClient) getFillsHistory(ctx context.Context) ([]cexcommon.Trade, err
 	}
 
 	var all []cexcommon.Trade
-	var after string
-	for page := 0; page < 3; page++ {
+	// Resume a committed backfill first; drop uncommitted tentative progress
+	// so a failed write replays rows. Otherwise start at the newest fills —
+	// except when resuming from durable state after a restart, in which case
+	// the stored position continues the backfill (fills that arrive meanwhile
+	// import once the range exhausts). Overlap with saved history proves
+	// completion only when a previous run durably proved exhaustion: saved
+	// data shows a prefix exists, never that older history was exhausted.
+	after := ""
+	completeProven := false
+	if c.fillsAfter != "" && c.fillsAfterCommitted {
+		after = c.fillsAfter
+	} else {
+		c.fillsAfter = ""
+		durable := c.loadFillsCursor(ctx)
+		completeProven = durable.Complete
+		if !completeProven && durable.Position != "" {
+			after = durable.Position
+		}
+	}
+	oldest := ""
+	if after == "" {
+		oldest = c.oldestSavedBillID(ctx)
+	}
+	complete := false
+	for page := 0; page < fillsPageBudget; page++ {
 		q := url.Values{}
 		q.Set("instType", "SPOT")
+		q.Set("limit", strconv.Itoa(fillsPageSize))
 		if after != "" {
 			q.Set("after", after)
 		}
 		var env envelope
 		if err := c.signedGet(ctx, "/api/v5/trade/fills-history", q, &env); err != nil {
+			// Retain successful pages; the next run resumes from the
+			// persisted cursor instead of losing them.
+			if len(all) > 0 {
+				c.fillsAfter = after
+				c.fillsAfterCommitted = false
+				c.pendingCursor = repository.SyncCursor{Scope: fillsScope, Position: after}
+				c.pendingDirty = true
+				return all, errFillsPending
+			}
 			return all, err
 		}
 		if env.Code != "0" && env.Code != "" {
+			if len(all) > 0 {
+				c.fillsAfter = after
+				c.fillsAfterCommitted = false
+				c.pendingCursor = repository.SyncCursor{Scope: fillsScope, Position: after}
+				c.pendingDirty = true
+				return all, errFillsPending
+			}
 			return all, fmt.Errorf("okx fills api error %s: %s", env.Code, env.Msg)
 		}
 		if len(env.Data) == 0 {
+			complete = true
 			break
 		}
 		for _, f := range env.Data {
+			quantity := firstNonEmpty(f.FillSz, f.Size, f.AccSz)
+			if quantity == "" {
+				continue
+			}
 			ts := time.UnixMilli(int64(atof(f.TS))).UTC()
-			fee := atof(f.Fee)
-			if fee < 0 {
-				fee = -fee
+			// OKX signs fills: negative values are fees charged to the
+			// account, positive values are maker rebates paid out. A rebate
+			// is income, not cost, so it must not land in Fee as a charge;
+			// it is preserved as a note instead.
+			fee, note := 0.0, ""
+			if rawFee := atof(f.Fee); rawFee < 0 {
+				fee = -rawFee
+			} else if rawFee > 0 {
+				note = "Maker rebate " + f.Fee + " " + f.FeeCcy + " excluded from fee"
 			}
 			all = append(all, cexcommon.Trade{
-				ID:        f.BillID,
-				Symbol:    strings.ReplaceAll(f.InstID, "-", ""),
-				Side:      f.Side,
-				Price:     atof(f.FillPx),
-				Quantity:  atof(f.FillSz),
-				Fee:       fee,
-				FeeAsset:  f.FeeCcy,
-				Timestamp: ts,
+				ID:         f.BillID,
+				Symbol:     f.InstID,
+				BaseAsset:  pairBase(f.InstID),
+				QuoteAsset: pairQuote(f.InstID),
+				Side:       f.Side,
+				Price:      atof(f.FillPx),
+				Quantity:   atof(quantity),
+				Fee:        fee,
+				FeeAsset:   f.FeeCcy,
+				Note:       note,
+				Timestamp:  ts,
 			})
 		}
 		after = env.Data[len(env.Data)-1].BillID
+		if oldest != "" && completeProven {
+			for _, f := range env.Data {
+				if f.BillID == oldest {
+					// A previous run proved exhaustion and this contiguous
+					// walk from the top rejoined saved history: the range
+					// is fully covered.
+					complete = true
+					break
+				}
+			}
+			if complete {
+				break
+			}
+		}
+		if len(env.Data) < fillsPageSize {
+			complete = true
+			break
+		}
 	}
+	if !complete {
+		c.fillsAfter = after
+		c.fillsAfterCommitted = false
+		c.pendingCursor = repository.SyncCursor{Scope: fillsScope, Position: after}
+		c.pendingDirty = true
+		return all, errFillsPending
+	}
+	c.fillsAfter = ""
+	c.fillsAfterCommitted = true
+	c.pendingCursor = repository.SyncCursor{Scope: fillsScope, Complete: true}
+	c.pendingDirty = true
 	return all, nil
+}
+
+// loadFillsCursor reads durable backfill state; absence or failure means a
+// fresh walk (safe: it only replays rows).
+func (c *CEXClient) loadFillsCursor(ctx context.Context) repository.SyncCursor {
+	if c.cursors == nil {
+		return repository.SyncCursor{}
+	}
+	cur, err := c.cursors.Get(ctx, fillsScope)
+	if err != nil {
+		return repository.SyncCursor{}
+	}
+	return cur
+}
+
+// oldestSavedBillID returns the oldest persisted fill billID for the spot
+// account, or "" when history is absent or unreadable. It is the durable
+// cursor that lets a restarted backfill stop at already-saved history
+// instead of rewalking it.
+func (c *CEXClient) oldestSavedBillID(ctx context.Context) string {
+	if c.history == nil {
+		return ""
+	}
+	_, total, err := c.history.List(ctx, repository.ActivityFilter{AccountID: "okx-spot", Limit: 1})
+	if err != nil || total <= 0 {
+		return ""
+	}
+	rows, _, err := c.history.List(ctx, repository.ActivityFilter{AccountID: "okx-spot", Offset: total - 1, Limit: 1})
+	if err != nil || len(rows) == 0 {
+		return ""
+	}
+	id := rows[0].SourceRecordID
+	id = strings.TrimSuffix(id, "-quote")
+	id = strings.TrimSuffix(id, "-base")
+	if id == "" {
+		return ""
+	}
+	return id
 }
 
 func (c *CEXClient) signedGet(ctx context.Context, path string, query url.Values, into any) error {

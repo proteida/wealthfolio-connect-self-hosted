@@ -90,6 +90,85 @@ var _ = Describe("CEXClient", func() {
 		}, srv.URL, hc).Fetch(context.Background())
 		Expect(err).To(MatchError(ContainSubstring("50100")))
 	})
+
+	It("falls back to the order size when fill size is empty", func() {
+		srv, hc := newServer(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/v5/account/balance" {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"code": "0",
+					"data": []any{map[string]any{"details": []any{
+						map[string]any{"ccy": "USDT", "cashBal": "10", "eqUsd": "10"},
+					}}},
+				})
+				return
+			}
+			if r.URL.Query().Get("after") != "" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": "0", "data": []any{}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": "0",
+				"data": []any{map[string]any{
+					"billId": "fill-1", "instId": "BTC-USDT", "side": "buy",
+					"fillSz": "", "sz": "0.25", "fillPx": "100",
+					"fee": "0", "feeCcy": "USDT", "ts": "1700000000000",
+				}},
+			})
+		})
+		defer srv.Close()
+
+		c := okx.NewCEX(okx.Credentials{APIKey: "k", Secret: "s", Passphrase: "p"}, srv.URL, hc)
+		snap, err := c.Fetch(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.Activities["okx-spot"]).To(HaveLen(2))
+		Expect(snap.Activities["okx-spot"][1].Units).To(Equal(0.25))
+	})
+
+	It("records rebates as notes instead of charged fees", func() {
+		srv, hc := newServer(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/v5/account/balance" {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"code": "0",
+					"data": []any{map[string]any{"details": []any{
+						map[string]any{"ccy": "USDT", "cashBal": "10", "eqUsd": "10"},
+					}}},
+				})
+				return
+			}
+			if r.URL.Query().Get("after") != "" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": "0", "data": []any{}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": "0",
+				"data": []any{
+					map[string]any{
+						"billId": "fill-charge", "instId": "BTC-USDT", "side": "buy",
+						"fillSz": "0.1", "fillPx": "100",
+						"fee": "-0.01", "feeCcy": "USDT", "ts": "1700000000000",
+					},
+					map[string]any{
+						"billId": "fill-rebate", "instId": "BTC-USDT", "side": "buy",
+						"fillSz": "0.1", "fillPx": "100",
+						"fee": "0.005", "feeCcy": "USDT", "ts": "1700000001000",
+					},
+				},
+			})
+		})
+		defer srv.Close()
+
+		c := okx.NewCEX(okx.Credentials{APIKey: "k", Secret: "s", Passphrase: "p"}, srv.URL, hc)
+		snap, err := c.Fetch(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		acts := snap.Activities["okx-spot"]
+		Expect(acts).To(HaveLen(4))
+		Expect(acts[1].Fee).To(Equal(0.01))
+		Expect(acts[1].FeeAsset).To(Equal("USDT"))
+		// Positive fee values are rebates: never recorded as a charged fee.
+		Expect(acts[3].Fee).To(BeZero())
+		Expect(acts[3].Description).To(ContainSubstring("rebate"))
+		Expect(acts[3].NeedsReview).To(BeTrue())
+	})
 })
 
 var _ = Describe("Web3Client", func() {
