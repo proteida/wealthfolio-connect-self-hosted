@@ -48,7 +48,7 @@ no third-party data aggregator sits between you and the exchange:
 - **Interactive Brokers** — socket protocol to a local **IB Gateway / TWS** (`scmhub/ibapi`)
 - **Binance Spot** — REST API (`adshao/go-binance/v2`)
 - **OKX CEX** — signed v5 REST API (HMAC-SHA256)
-- **OKX Web3 / DEX** — signed v5 REST API for on-chain wallet aggregation
+- **OKX Web3 / DEX** — signed v6 OnchainOS API for on-chain wallet balances + history
 - **Bitget Spot** — signed v2 REST API
 - **Hyperliquid** — public `/info` endpoint, wallet-address only (read-only)
 
@@ -249,11 +249,29 @@ required).
 | `OKX_API_SECRET` | OKX API secret.       |
 | `OKX_PASSPHRASE` | OKX API passphrase.   |
 
-### OKX Web3 / DEX (signed v5 REST + wallet list)
+### OKX Web3 / DEX (signed v6 REST + wallet list)
 
 The Web3 client uses a separate set of OKX credentials with **DEX API**
 permissions enabled, and aggregates balances across the wallets you list.
+Transfer quantities round to cents so in/out legs net cleanly; transfers
+always carry an explicit `mapping_metadata.flow.is_external` flag (`true`
+for counterparties outside the configured wallets).
 
+| Name                  | Description                                                                                              |
+| --------------------- | -------------------------------------------------------------------------------------------------------- |
+| `OKX_WEB3_API_KEY`    | OKX Web3 API key (DEX-enabled).                                                                          |
+| `OKX_WEB3_API_SECRET` | OKX Web3 API secret.                                                                                     |
+| `OKX_WEB3_PASSPHRASE` | OKX Web3 passphrase.                                                                                     |
+| `DEFI_WALLETS`        | JSON array of wallets. Example: `[{"address":"0xabc...","chains":["1","56","42161"],"label":"main"}]`. |
+
+`chains` are OKX chain indexes — see [OKX docs](https://www.okx.com/web3/build/docs/waas/dex-supported-chains)
+(e.g. `1` = Ethereum, `56` = BSC, `42161` = Arbitrum, `137` = Polygon, `10` = Optimism, `8453` = Base).
+Omit `chains` for EVM wallets to auto-discover funded chains (cached 15 minutes).
+
+Transaction history uses `/api/v6/dex/post-transaction/transactions-by-address`
+with `limit=20` on every request — the live API rejects larger limits for
+multi-chain queries (`81001`), despite what the docs suggest. History
+failures leave balances intact and only mark transaction sync incomplete.
 | Name                  | Description                                                                                              |
 | --------------------- | -------------------------------------------------------------------------------------------------------- |
 | `OKX_WEB3_API_KEY`    | OKX Web3 API key (DEX-enabled).                                                                          |
@@ -441,7 +459,7 @@ wealthfolio-connect-open/
 │   │       ├── futu/           # TCP → local OpenD
 │   │       ├── ibkr/           # socket → local IB Gateway / TWS
 │   │       ├── binance/        # Spot REST
-│   │       ├── okx/            # CEX + Web3/DEX (signed v5)
+│   │       ├── okx/            # CEX (signed v5) + Web3/DEX (signed v6)
 │   │       ├── bitget/         # Spot REST (signed v2)
 │   │       ├── hyperliquid/    # public /info
 │   │       └── cexcommon/      # shared snapshot translation

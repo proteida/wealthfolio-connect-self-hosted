@@ -31,3 +31,30 @@ func TestShortAddr(t *testing.T) {
 		t.Error("long address should be truncated")
 	}
 }
+
+func TestIsTONWallet(t *testing.T) {
+	for _, address := range []string{
+		"UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		"EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		"0:0123456789abcdef",
+		"-1:0123456789abcdef",
+	} {
+		if !isTONWallet(address) {
+			t.Errorf("isTONWallet(%q) = false, want true", address)
+		}
+	}
+	for _, address := range []string{"0xabc", "bc1q8rm2w4hla65d0zy670zxdqane52xwca32yqz9r", ""} {
+		if isTONWallet(address) {
+			t.Errorf("isTONWallet(%q) = true, want false", address)
+		}
+	}
+}
+
+func TestFirstNonEmpty(t *testing.T) {
+	if got := firstNonEmpty("", " ", "0.25", "1"); got != "0.25" {
+		t.Fatalf("firstNonEmpty() = %q, want %q", got, "0.25")
+	}
+	if got := firstNonEmpty("", " "); got != "" {
+		t.Fatalf("firstNonEmpty() = %q, want empty string", got)
+	}
+}
