@@ -12,6 +12,7 @@
 //	activity_model.go    → ActivityPO
 //	holdings_model.go    → HoldingsSnapshotPO
 //	token_model.go       → TokenPO
+//	cursor_model.go      → SyncStatePO
 //
 // This file only owns the Migrator registry and JSON helpers shared across
 // PO files.
@@ -31,6 +32,7 @@ func (Migrator) Models() []any {
 		&ActivityPO{},
 		&HoldingsSnapshotPO{},
 		&TokenPO{},
+		&SyncStatePO{},
 	}
 }
 
