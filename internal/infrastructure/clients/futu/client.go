@@ -164,6 +164,12 @@ func (c *Client) Fetch(ctx context.Context) (snap domainsync.BrokerSnapshot, err
 
 	data := make([]AccountSnapshot, 0, len(accs))
 	for _, a := range accs {
+		// Paper/simulated accounts never reach holdings or history.
+		// ListAccounts already filters them; this guards Sessions that
+		// do not.
+		if a.TrdEnv == pb.TrdEnv_TrdEnv_Simulate {
+			continue
+		}
 		c.log.Info().
 			Uint64("accID", a.AccID).
 			Str("env", a.TrdEnv.String()).
@@ -205,10 +211,6 @@ func (c *Client) Fetch(ctx context.Context) (snap domainsync.BrokerSnapshot, err
 			// Skip accounts where both calls failed but keep the others.
 			continue
 		}
-		// Skip accounts with no assets and no positions.
-		if (funds == nil || funds.GetTotalAssets() == 0) && len(positions) == 0 {
-			continue
-		}
 		// Trade history is best-effort: simulated accounts and accounts
 		// without trading authority will return errors here. We swallow
 		// the error and translate with an empty fill list, mirroring how
@@ -224,11 +226,88 @@ func (c *Client) Fetch(ctx context.Context) (snap domainsync.BrokerSnapshot, err
 				Positions:         positions,
 				Deals:             deals,
 				ActivitiesFetched: dErr == nil,
+				// One failed leg means the snapshot is incomplete and
+				// must never replace the last complete holdings.
+				Partial: funds == nil || pErr != nil,
 			},
 		)
 	}
 
-	return Translate(data), nil
+	return Translate(mergeAccountSnapshots(data)), nil
+}
+
+// mergeAccountSnapshots folds the per-market snapshots of one real Futu
+// account into a single snapshot. Futu accounts are universal: funds are
+// shared and position/history endpoints return account-wide data, so
+// keeping one snapshot per authorized market would expose the same wealth
+// twice. Merging by AccID is also correct if an endpoint ever filters by
+// market, since positions and fills union instead of duplicating.
+func mergeAccountSnapshots(data []AccountSnapshot) []AccountSnapshot {
+	groups := make([]uint64, 0, len(data))
+	byID := make(map[uint64][]AccountSnapshot, len(data))
+	for _, s := range data {
+		if _, ok := byID[s.Account.AccID]; !ok {
+			groups = append(groups, s.Account.AccID)
+		}
+		byID[s.Account.AccID] = append(byID[s.Account.AccID], s)
+	}
+	out := make([]AccountSnapshot, 0, len(groups))
+	for _, id := range groups {
+		members := byID[id]
+		if len(members) == 1 {
+			out = append(out, members[0])
+			continue
+		}
+		merged := members[0]
+		seenPos := make(map[string]bool, len(merged.Positions))
+		for _, p := range merged.Positions {
+			if p != nil {
+				seenPos[p.GetCode()] = true
+			}
+		}
+		seenDeals := make(map[string]bool, len(merged.Deals))
+		for _, d := range merged.Deals {
+			seenDeals[fillKey(d)] = true
+		}
+		for _, m := range members[1:] {
+			// Primary funds drive the account total; first non-nil wins
+			// so a failed leg never blanks the balance.
+			if merged.Funds == nil {
+				merged.Funds = m.Funds
+				merged.Account = m.Account
+			}
+			for _, p := range m.Positions {
+				if p == nil || seenPos[p.GetCode()] {
+					continue
+				}
+				seenPos[p.GetCode()] = true
+				merged.Positions = append(merged.Positions, p)
+			}
+			for _, d := range m.Deals {
+				if key := fillKey(d); !seenDeals[key] {
+					seenDeals[key] = true
+					merged.Deals = append(merged.Deals, d)
+				}
+			}
+			// History is only complete when every market leg succeeded.
+			merged.ActivitiesFetched = merged.ActivitiesFetched && m.ActivitiesFetched
+			merged.Partial = merged.Partial || m.Partial
+		}
+		out = append(out, merged)
+	}
+	return out
+}
+
+// fillKey identifies a fill the same way dealToActivity derives its
+// SourceRecordID, so merge dedupe matches translate identity.
+func fillKey(f *pb.OrderFill) string {
+	if f == nil {
+		return ""
+	}
+	if id := f.GetFillIDEx(); id != "" {
+		return "ex:" + id
+	}
+	return fmt.Sprintf("id:%d", f.GetFillID())
 }
 
 // AccountSnapshot bundles all per-account upstream data the translator needs.
@@ -238,6 +317,9 @@ type AccountSnapshot struct {
 	Positions         []*pb.Position
 	Deals             []*pb.OrderFill
 	ActivitiesFetched bool
+	// Partial marks a snapshot with a failed funds/positions leg. Partial
+	// snapshots must never replace the last complete holdings.
+	Partial bool
 }
 
 // Translate converts every per-account upstream payload into one BrokerSnapshot
@@ -261,7 +343,10 @@ func Translate(snaps []AccountSnapshot) domainsync.BrokerSnapshot {
 	activities := map[string][]brokerage.Activity{}
 
 	for _, s := range snaps {
-		accID := fmt.Sprintf("futu-%d-%s", s.Account.AccID, marketSlug(s.Account.TrdMarket))
+		// One brokerage.Account per real Futu account ID. Per-market
+		// snapshots are merged by Fetch before reaching Translate; the
+		// account never fans out by market authorization.
+		accID := fmt.Sprintf("futu-%d", s.Account.AccID)
 		mainCur := primaryCurrency(s.Account.TrdMarket)
 		acc := brokerage.Account{
 			ID:                     accID,
@@ -290,7 +375,10 @@ func Translate(snaps []AccountSnapshot) domainsync.BrokerSnapshot {
 		if len(acts) > 0 {
 			activities[accID] = acts
 		}
-		if s.ActivitiesFetched || len(acts) > 0 {
+		// Completion follows fetch success only: a partial leg can still
+		// contribute activities while leaving history incomplete, so the
+		// next run retries the missing scope instead of treating it done.
+		if s.ActivitiesFetched {
 			acc.LastTxSync = &now
 			acc.InitialTxSyncDone = true
 		}
@@ -301,6 +389,7 @@ func Translate(snaps []AccountSnapshot) domainsync.BrokerSnapshot {
 				Balances:   buildBalances(s.Funds),
 				Positions:  buildPositions(s.Positions, s.Account.TrdMarket),
 				CapturedAt: now,
+				Partial:    s.Partial,
 			},
 		)
 	}
