@@ -272,15 +272,6 @@ Transaction history uses `/api/v6/dex/post-transaction/transactions-by-address`
 with `limit=20` on every request — the live API rejects larger limits for
 multi-chain queries (`81001`), despite what the docs suggest. History
 failures leave balances intact and only mark transaction sync incomplete.
-| Name                  | Description                                                                                              |
-| --------------------- | -------------------------------------------------------------------------------------------------------- |
-| `OKX_WEB3_API_KEY`    | OKX Web3 API key (DEX-enabled).                                                                          |
-| `OKX_WEB3_API_SECRET` | OKX Web3 API secret.                                                                                     |
-| `OKX_WEB3_PASSPHRASE` | OKX Web3 passphrase.                                                                                     |
-| `DEFI_WALLETS`        | JSON array of wallets. Example: `[{"address":"0xabc...","chains":["1","56","42161"],"label":"main"}]`. |
-
-`chains` are OKX chain indexes — see [OKX docs](https://www.okx.com/web3/build/docs/waas/dex-supported-chains)
-(e.g. `1` = Ethereum, `56` = BSC, `42161` = Arbitrum, `137` = Polygon, `10` = Optimism, `8453` = Base).
 
 ### Bitget Spot (signed v2 REST)
 
