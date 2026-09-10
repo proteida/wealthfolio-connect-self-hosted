@@ -41,6 +41,73 @@ var _ = Describe("Translate", func() {
 		Expect(snap.Holdings[0].Positions[0].Units).To(Equal(0.5))
 	})
 
+	It("keeps non-USD quote denomination instead of fabricating USD", func() {
+		snap := cexcommon.Translate("test", "Test", cexcommon.Snapshot{
+			Trades: []cexcommon.Trade{
+				{ID: "t1", Symbol: "ETH-BTC", BaseAsset: "ETH", QuoteAsset: "BTC",
+					Side: "buy", Price: 0.05, Quantity: 1, Fee: 0.001, FeeAsset: "BNB",
+					Timestamp: time.Now()},
+			},
+		})
+		acts := snap.Activities["test-spot"]
+		Expect(acts).To(HaveLen(2))
+		// Quote leg: SELL 0.05 BTC, denominated in BTC at 1:1.
+		Expect(acts[0].Symbol.Symbol).To(Equal("BTC"))
+		Expect(acts[0].Units).To(Equal(0.05))
+		Expect(acts[0].Amount).To(Equal(0.05))
+		Expect(acts[0].Currency.Code).To(Equal("BTC"))
+		// Base leg: BUY 1 ETH for 0.05 BTC, not a $0.05 purchase.
+		Expect(acts[1].Symbol.Symbol).To(Equal("ETH"))
+		Expect(acts[1].Price).To(Equal(0.05))
+		Expect(acts[1].Currency.Code).To(Equal("BTC"))
+		Expect(acts[1].Fee).To(Equal(0.001))
+		Expect(acts[1].FeeAsset).To(Equal("BNB"))
+		for _, a := range acts {
+			Expect(a.NeedsReview).To(BeTrue())
+			Expect(a.Description).To(ContainSubstring("Quoted in BTC"))
+		}
+	})
+
+	It("resolves symbol-only pairs into their quote denomination", func() {
+		snap := cexcommon.Translate("test", "Test", cexcommon.Snapshot{
+			Trades: []cexcommon.Trade{
+				{ID: "t1", Symbol: "ETHBTC", Side: "buy",
+					Price: 0.05, Quantity: 1, Timestamp: time.Now()},
+			},
+		})
+		acts := snap.Activities["test-spot"]
+		Expect(acts).To(HaveLen(2))
+		Expect(acts[1].Symbol.Symbol).To(Equal("ETH"))
+		Expect(acts[1].Currency.Code).To(Equal("BTC"))
+		Expect(acts[1].NeedsReview).To(BeTrue())
+	})
+
+	It("keeps USD denomination and no review flag for stable quotes", func() {
+		snap := cexcommon.Translate("test", "Test", cexcommon.Snapshot{
+			Trades: []cexcommon.Trade{
+				{ID: "t1", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+					Side: "buy", Price: 60000, Quantity: 0.1, Timestamp: time.Now()},
+			},
+		})
+		acts := snap.Activities["test-spot"]
+		Expect(acts).To(HaveLen(2))
+		Expect(acts[1].Currency.Code).To(Equal("USD"))
+		Expect(acts[1].NeedsReview).To(BeFalse())
+	})
+
+	It("surfaces trade notes in the description for review", func() {
+		snap := cexcommon.Translate("test", "Test", cexcommon.Snapshot{
+			Trades: []cexcommon.Trade{
+				{ID: "t1", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+					Side: "buy", Price: 60000, Quantity: 0.1,
+					Note: "Maker rebate 0.5 USDT excluded from fee", Timestamp: time.Now()},
+			},
+		})
+		acts := snap.Activities["test-spot"]
+		Expect(acts[1].Description).To(ContainSubstring("Maker rebate"))
+		Expect(acts[1].NeedsReview).To(BeTrue())
+	})
+
 	It("translates trades into BUY/SELL activities", func() {
 		snap := cexcommon.Translate("test", "Test", cexcommon.Snapshot{
 			Trades: []cexcommon.Trade{
@@ -49,9 +116,29 @@ var _ = Describe("Translate", func() {
 			},
 		})
 		acts := snap.Activities["test-spot"]
+		Expect(acts).To(HaveLen(4))
+		Expect(acts[0].Symbol.Symbol).To(Equal("USDT"))
+		Expect(string(acts[0].Type)).To(Equal("SELL"))
+		Expect(acts[1].Symbol.Symbol).To(Equal("BTC"))
+		Expect(string(acts[1].Type)).To(Equal("BUY"))
+		Expect(acts[2].Symbol.Symbol).To(Equal("BTC"))
+		Expect(string(acts[2].Type)).To(Equal("SELL"))
+		Expect(acts[3].Symbol.Symbol).To(Equal("USDT"))
+		Expect(string(acts[3].Type)).To(Equal("BUY"))
+	})
+
+	It("normalizes USD₮0 legs to USDT with the source leg first", func() {
+		snap := cexcommon.Translate("test", "Test", cexcommon.Snapshot{
+			Trades: []cexcommon.Trade{
+				{ID: "s1", Symbol: "BTCUSD₮0", BaseAsset: "BTC", QuoteAsset: "USD₮0", Side: "sell", Price: 60000, Quantity: 0.1, Timestamp: time.Now()},
+			},
+		})
+		acts := snap.Activities["test-spot"]
 		Expect(acts).To(HaveLen(2))
-		Expect(string(acts[0].Type)).To(Equal("BUY"))
-		Expect(string(acts[1].Type)).To(Equal("SELL"))
+		Expect(acts[0].Symbol.Symbol).To(Equal("BTC"))
+		Expect(string(acts[0].Type)).To(Equal("SELL"))
+		Expect(acts[1].Symbol.Symbol).To(Equal("USDT"))
+		Expect(string(acts[1].Type)).To(Equal("BUY"))
 	})
 
 	It("marks an empty successful trade query as synced", func() {
@@ -74,5 +161,18 @@ var _ = Describe("IsStablecoin", func() {
 		Expect(cexcommon.IsStablecoin("usdc")).To(BeTrue())
 		Expect(cexcommon.IsStablecoin("DAI")).To(BeTrue())
 		Expect(cexcommon.IsStablecoin("BTC")).To(BeFalse())
+		Expect(cexcommon.IsStablecoin("USD₮0")).To(BeTrue())
+	})
+})
+
+var _ = Describe("NormalizeAsset", func() {
+	It("maps USD₮0 to USDT", func() {
+		Expect(cexcommon.NormalizeAsset("USD₮0")).To(Equal("USDT"))
+		Expect(cexcommon.NormalizeAsset("USD₮")).To(Equal("USDT"))
+		Expect(cexcommon.NormalizeAsset("usdt")).To(Equal("USDT"))
+	})
+
+	It("maps Affluent vault shares to one position", func() {
+		Expect(cexcommon.NormalizeAsset("affUSDe")).To(Equal("AFFSENTORAENT"))
 	})
 })
