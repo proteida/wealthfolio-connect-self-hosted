@@ -110,9 +110,11 @@ var _ = Describe("ActivityRepository", func() {
 		Expect(out).To(BeEmpty())
 	})
 
-	It("upserts a batch", func() {
+	It("upserts a batch atomically", func() {
+		mock.ExpectBegin()
 		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
 			WillReturnResult(sqlmock.NewResult(0, 2))
+		mock.ExpectCommit()
 		err := repo.UpsertBatch(ctx, "acc", []brokerage.Activity{
 			{ID: "1", SourceRecordID: "s1", Type: brokerage.ActivityBuy, TradeDate: now,
 				Symbol: &brokerage.Symbol{Symbol: "AAPL"}},
@@ -122,13 +124,46 @@ var _ = Describe("ActivityRepository", func() {
 		Expect(mock.ExpectationsWereMet()).To(Succeed())
 	})
 
+	It("splits oversized batches so statements stay under the parameter limit", func() {
+		items := make([]brokerage.Activity, 0, 2500)
+		for i := 0; i < 2500; i++ {
+			items = append(items, brokerage.Activity{
+				ID:             "id",
+				SourceRecordID: "src",
+				Type:           brokerage.ActivityBuy,
+				TradeDate:      now,
+			})
+			items[i].SourceRecordID = "src-" + string(rune(0x100000+i))
+		}
+		mock.ExpectBegin()
+		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
+			WillReturnResult(sqlmock.NewResult(0, 1000))
+		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
+			WillReturnResult(sqlmock.NewResult(0, 1000))
+		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
+			WillReturnResult(sqlmock.NewResult(0, 500))
+		mock.ExpectCommit()
+		Expect(repo.UpsertBatch(ctx, "acc", items)).To(Succeed())
+		Expect(mock.ExpectationsWereMet()).To(Succeed())
+	})
+
+	It("rolls back the batch when a chunk fails", func() {
+		mock.ExpectBegin()
+		mock.ExpectExec(rx(`INSERT INTO "activities"`)).WillReturnError(errors.New("chunk fail"))
+		mock.ExpectRollback()
+		err := repo.UpsertBatch(ctx, "acc", []brokerage.Activity{{ID: "x", SourceRecordID: "y", TradeDate: now}})
+		Expect(err).To(MatchError(ContainSubstring("chunk fail")))
+	})
+
 	It("is a no-op when the batch is empty", func() {
 		Expect(repo.UpsertBatch(ctx, "acc", nil)).To(Succeed())
 		Expect(mock.ExpectationsWereMet()).To(Succeed())
 	})
 
 	It("propagates upsert errors", func() {
+		mock.ExpectBegin()
 		mock.ExpectExec(rx(`INSERT INTO "activities"`)).WillReturnError(errors.New("dup"))
+		mock.ExpectRollback()
 		err := repo.UpsertBatch(ctx, "acc", []brokerage.Activity{{ID: "x", SourceRecordID: "y", TradeDate: now}})
 		Expect(err).To(MatchError(ContainSubstring("dup")))
 	})
