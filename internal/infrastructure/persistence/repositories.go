@@ -107,17 +107,27 @@ func (r *accountRepo) Get(ctx context.Context, id string) (brokerage.Account, er
 	return po.ToDomain(), nil
 }
 
-// Upsert inserts or updates the supplied account.
+// accountConflictColumns lists the columns refreshed when an account
+// upsert hits the id conflict. sync_enabled is deliberately absent: it is
+// user-owned preference state managed by SetSyncEnabled, and upstream
+// snapshots must never reset it.
+func accountConflictColumns() []string {
+	return []string{
+		"name", "account_number", "type", "raw_type", "currency",
+		"balance_total", "balance_currency", "brokerage_authorization",
+		"institution_name", "shared_with_household",
+		"is_paper", "status", "owner_user_id", "owner_full_name", "owner_email",
+	}
+}
+
+// Upsert inserts or updates the supplied account. sync_enabled is
+// user-owned preference state (see SetSyncEnabled) and is never overwritten
+// by upstream snapshots: it is set on insert and left alone on conflict.
 func (r *accountRepo) Upsert(ctx context.Context, a brokerage.Account) error {
 	po := accountFromDomain(a)
 	err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "id"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"name", "account_number", "type", "raw_type", "currency",
-			"balance_total", "balance_currency", "brokerage_authorization",
-			"institution_name", "sync_enabled", "shared_with_household",
-			"is_paper", "status", "owner_user_id", "owner_full_name", "owner_email",
-		}),
+		Columns:   []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns(accountConflictColumns()),
 	}).Create(&po).Error
 	if err != nil {
 		return fmt.Errorf("account upsert: %w", err)
