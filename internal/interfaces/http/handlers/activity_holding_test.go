@@ -108,6 +108,7 @@ var _ = Describe("ActivityHandler.List", func() {
 						SourceGroupID: "g1",
 						RawType:       "BUY_MARKET",
 						Fee:           50,
+						FeeAsset:      "HKD",
 					},
 				}, 1, nil
 			})
