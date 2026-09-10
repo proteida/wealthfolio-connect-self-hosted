@@ -342,7 +342,7 @@ func buildPositions(in []*pb.Position, _ pb.TrdMarket) []brokerage.Position {
 		if p == nil || p.GetQty() == 0 {
 			continue
 		}
-		cls, ok := classifySymbol(p.GetCode())
+		cls, ok := classifySecurity(p.GetCode(), p.GetSecMarket())
 		if !ok {
 			continue
 		}
@@ -361,10 +361,12 @@ func buildPositions(in []*pb.Position, _ pb.TrdMarket) []brokerage.Position {
 					Exchange:    brokerage.Exchange{Code: cls.exchangeCode, Name: cls.exchangeName},
 					Currency:    brokerage.Currency{Code: cur},
 				},
-				Units:                p.GetQty(),
-				Price:                p.GetPrice(),
-				OpenPnL:              p.GetPlVal(),
-				AveragePurchasePrice: p.GetCostPrice(),
+				Units:   p.GetQty(),
+				Price:   p.GetPrice(),
+				OpenPnL: p.GetPlVal(),
+				// AverageCostPrice is the average purchase price. CostPrice is
+				// the deprecated diluted-cost field and must not pose as basis.
+				AveragePurchasePrice: p.GetAverageCostPrice(),
 				Currency:             brokerage.Currency{Code: cur},
 			},
 		)
@@ -411,11 +413,16 @@ func dealToActivity(f *pb.OrderFill, accountID string, _ pb.TrdMarket) (brokerag
 		}
 		sourceID = fmt.Sprintf("%d", f.GetFillID())
 	}
-	cls, ok := classifySymbol(f.GetCode())
+	cls, ok := classifySecurity(f.GetCode(), f.GetSecMarket())
 	if !ok {
 		return brokerage.Activity{}, false
 	}
-	ts := dealTimestamp(f)
+	ts, ok := dealTimestamp(f)
+	if !ok {
+		// Reject fills with unparseable timestamps instead of stamping
+		// today: a moving trade date rewrites history on every sync.
+		return brokerage.Activity{}, false
+	}
 	return brokerage.Activity{
 		ID:        sourceID,
 		AccountID: accountID,
@@ -461,22 +468,24 @@ func futuTrdSide(side pb.TrdSide) (brokerage.ActivityType, string, bool) {
 
 // dealTimestamp prefers the high-precision Unix timestamp (CreateTimestamp)
 // because OpenD historical fills sometimes drop the formatted CreateTime.
-func dealTimestamp(f *pb.OrderFill) time.Time {
+// The second return is false when nothing parses; callers must reject the
+// fill rather than substitute now.
+func dealTimestamp(f *pb.OrderFill) (time.Time, bool) {
 	if ts := f.GetCreateTimestamp(); ts > 0 {
 		sec := int64(ts)
 		nsec := int64((ts - float64(sec)) * 1e9)
-		return time.Unix(sec, nsec).UTC()
+		return time.Unix(sec, nsec).UTC(), true
 	}
 	if s := f.GetCreateTime(); s != "" {
 		// Futu format: "YYYY-MM-DD HH:MM:SS" or "...HH:MM:SS.MS".
 		layouts := []string{"2006-01-02 15:04:05", "2006-01-02 15:04:05.000"}
 		for _, l := range layouts {
 			if t, err := time.Parse(l, s); err == nil {
-				return t.UTC()
+				return t.UTC(), true
 			}
 		}
 	}
-	return time.Now().UTC()
+	return time.Time{}, false
 }
 
 func accountDisplay(a Account) string {
@@ -576,6 +585,66 @@ type symbolClassification struct {
 // Returns ok=false to signal an unsupported code (warrants, options,
 // indices, fund codes with mixed shape, etc.) so the caller can skip the
 // row entirely.
+// classifySecurity resolves a Futu code using the authoritative per-security
+// market first, falling back to code-shape heuristics only when OpenD reports
+// Unknown. Shape alone misclassifies Japanese numeric codes (7203) and
+// mainland codes (600519) as Hong Kong.
+func classifySecurity(code string, market pb.TrdSecMarket) (symbolClassification, bool) {
+	if code == "" {
+		return symbolClassification{}, false
+	}
+	switch market {
+	case pb.TrdSecMarket_TrdSecMarket_HK:
+		sym := code
+		if len(sym) == 5 && sym[0] == '0' && isAllDigits(sym) {
+			sym = sym[1:]
+		}
+		return symbolClassification{
+			symbol:       sym + ".HK",
+			exchangeCode: "HKEX",
+			exchangeName: "Hong Kong",
+			currency:     currencyHKD,
+		}, true
+	case pb.TrdSecMarket_TrdSecMarket_US:
+		return symbolClassification{
+			symbol:       code,
+			exchangeCode: "NASDAQ",
+			exchangeName: "US",
+			currency:     "USD",
+		}, true
+	case pb.TrdSecMarket_TrdSecMarket_CN_SH:
+		return symbolClassification{
+			symbol:       code + ".SS",
+			exchangeCode: "SSE",
+			exchangeName: "Shanghai",
+			currency:     "CNH",
+		}, true
+	case pb.TrdSecMarket_TrdSecMarket_CN_SZ:
+		return symbolClassification{
+			symbol:       code + ".SZ",
+			exchangeCode: "SZSE",
+			exchangeName: "Shenzhen",
+			currency:     "CNH",
+		}, true
+	case pb.TrdSecMarket_TrdSecMarket_SG:
+		return symbolClassification{
+			symbol:       code + ".SG",
+			exchangeCode: "SGX",
+			exchangeName: "Singapore",
+			currency:     "SGD",
+		}, true
+	case pb.TrdSecMarket_TrdSecMarket_JP:
+		return symbolClassification{
+			symbol:       code + ".T",
+			exchangeCode: "TSE",
+			exchangeName: "Japan",
+			currency:     "JPY",
+		}, true
+	default:
+		return classifySymbol(code)
+	}
+}
+
 func classifySymbol(code string) (symbolClassification, bool) {
 	if code == "" {
 		return symbolClassification{}, false
