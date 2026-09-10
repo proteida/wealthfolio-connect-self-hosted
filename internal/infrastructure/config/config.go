@@ -56,8 +56,9 @@ type CryptoConfig struct {
 	OKXPassphrase string
 
 	// Binance Spot (api.binance.com /api/v3/...)
-	BinanceAPIKey string
-	BinanceSecret string
+	BinanceAPIKey       string
+	BinanceSecret       string
+	BinanceTradeSymbols []string // optional exact Spot pairs; empty uses held USDT pairs and persisted pairs
 
 	// Bitget Spot (api.bitget.com /api/v2/spot/...)
 	BitgetAPIKey     string
@@ -258,6 +259,11 @@ func LoadFrom(get Loader) (*Config, error) {
 		OKXWeb3Passphrase: getString(get, "OKX_WEB3_PASSPHRASE", ""),
 	}
 
+	for _, symbol := range strings.Split(getString(get, "BINANCE_TRADE_SYMBOLS", ""), ",") {
+		if symbol = strings.ToUpper(strings.TrimSpace(symbol)); symbol != "" {
+			cfg.Crypto.BinanceTradeSymbols = append(cfg.Crypto.BinanceTradeSymbols, symbol)
+		}
+	}
 	// DeFi wallets (consumed by the OKX Web3 integration).
 	if raw, ok := get("DEFI_WALLETS"); ok && strings.TrimSpace(raw) != "" {
 		var wallets []DefiWallet

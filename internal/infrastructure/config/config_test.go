@@ -50,6 +50,16 @@ var _ = Describe("Config.LoadFrom", func() {
 		})
 	})
 
+	It("parses exact Binance history symbols and leaves automatic selection as the default", func() {
+		cfg, err := config.LoadFrom(mapLoader(base))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Crypto.BinanceTradeSymbols).To(BeEmpty())
+		base["BINANCE_TRADE_SYMBOLS"] = " ethbtc, BTCUSDC, ,"
+		cfg, err = config.LoadFrom(mapLoader(base))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Crypto.BinanceTradeSymbols).To(Equal([]string{"ETHBTC", "BTCUSDC"}))
+	})
+
 	Context("when a required variable is missing", func() {
 		It("fails with an error listing all missing variables", func() {
 			_, err := config.LoadFrom(mapLoader(map[string]string{}))

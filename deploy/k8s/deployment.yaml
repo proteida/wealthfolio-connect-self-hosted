@@ -25,6 +25,8 @@ stringData:
   # ---- Binance ----
   BINANCE_API_KEY: "CHANGE_ME"
   BINANCE_API_SECRET: "CHANGE_ME"
+  # Optional exact Spot pairs for history (empty = auto from holdings).
+  # BINANCE_TRADE_SYMBOLS: "BTCUSDT,ETHBTC"
   # ---- OKX CEX ----
   OKX_API_KEY: "CHANGE_ME"
   OKX_API_SECRET: "CHANGE_ME"
