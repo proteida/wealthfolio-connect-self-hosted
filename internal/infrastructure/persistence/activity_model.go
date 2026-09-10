@@ -52,6 +52,7 @@ type ActivityPO struct {
 	SourceSystem        string `gorm:"column:source_system;type:text;not null;default:'CUSTOM'"`
 	SourceGroupID       string `gorm:"column:source_group_id;type:text;not null;default:''"`
 	NeedsReview         bool   `gorm:"column:needs_review;not null;default:false"`
+	IsExternal          bool   `gorm:"column:is_external;not null;default:false"`
 }
 
 // TableName pins the GORM-derived table name.
@@ -82,6 +83,7 @@ func (p ActivityPO) ToDomain() brokerage.Activity {
 		SourceRecordID:      p.SourceRecordID,
 		SourceGroupID:       p.SourceGroupID,
 		NeedsReview:         p.NeedsReview,
+		IsExternal:          p.IsExternal,
 	}
 	if p.SymbolTicker != "" || p.SymbolRaw != "" {
 		a.Symbol = &brokerage.Symbol{
@@ -157,5 +159,6 @@ func activityFromDomain(accountID string, a brokerage.Activity) ActivityPO {
 		SourceSystem:         a.SourceSystem,
 		SourceGroupID:        a.SourceGroupID,
 		NeedsReview:          a.NeedsReview,
+		IsExternal:           a.IsExternal,
 	}
 }

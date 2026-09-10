@@ -118,12 +118,49 @@ var _ = Describe("ActivityHandler.List", func() {
 		Expect(body).To(ContainSubstring(`"type":"BUY"`))
 		Expect(body).To(ContainSubstring(`"symbol":"00700"`))
 		Expect(body).To(ContainSubstring(`"option_type":"CALL"`))
+		Expect(body).To(ContainSubstring(`"option_symbol"`))
+		Expect(body).To(ContainSubstring(`"ticker":"AAPL"`))
 		Expect(body).To(ContainSubstring(`"subtype":"MARKET"`))
 		Expect(body).To(ContainSubstring(`"source_group_id":"g1"`))
+		Expect(body).To(ContainSubstring(`"fee":50`))
+		Expect(body).To(ContainSubstring(`"fee_asset":"HKD"`))
 		Expect(body).To(ContainSubstring(`"offset":10`))
 		Expect(body).To(ContainSubstring(`"limit":50`))
 		Expect(body).To(ContainSubstring(`"total":1`))
 		Expect(body).To(ContainSubstring(`"has_more":false`))
+	})
+
+	It("emits the external flow flag for untracked transfers", func() {
+		accRepo.EXPECT().Get(gomock.Any(), "a").Return(brokerage.Account{ID: "a"}, nil)
+		actRepo.EXPECT().List(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ interface{}, f repository.ActivityFilter) ([]brokerage.Activity, int, error) {
+				return []brokerage.Activity{
+					{
+						ID:          "x1",
+						Type:        brokerage.ActivityTransferOut,
+						TradeDate:   time.Date(2026, 5, 30, 9, 30, 0, 0, time.UTC),
+						Units:       10,
+						Amount:      10,
+						Currency:    brokerage.Currency{Code: "USD"},
+						IsExternal:  true,
+						NeedsReview: true,
+					},
+					{
+						ID:         "x2",
+						Type:       brokerage.ActivityTransferIn,
+						TradeDate:  time.Date(2026, 5, 30, 9, 30, 0, 0, time.UTC),
+						Units:      10,
+						Amount:     10,
+						Currency:   brokerage.Currency{Code: "USD"},
+						IsExternal: false,
+					},
+				}, 2, nil
+			})
+		rec := doGet("/sync/brokerage/accounts/a/activities")
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		body := rec.Body.String()
+		Expect(body).To(ContainSubstring(`"mapping_metadata":{"flow":{"is_external":true}}`))
+		Expect(body).To(ContainSubstring(`"mapping_metadata":{"flow":{"is_external":false}}`))
 	})
 
 	It("returns 500 on repository failure", func() {
