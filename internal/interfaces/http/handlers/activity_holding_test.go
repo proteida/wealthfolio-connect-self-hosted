@@ -74,6 +74,18 @@ var _ = Describe("ActivityHandler.List", func() {
 		Expect(rec.Body.String()).To(ContainSubstring("INVALID_END_DATE"))
 	})
 
+	It("converts an inclusive end_date to the exclusive next-day boundary", func() {
+		accRepo.EXPECT().Get(gomock.Any(), "a").Return(brokerage.Account{ID: "a"}, nil)
+		actRepo.EXPECT().List(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ interface{}, f repository.ActivityFilter) ([]brokerage.Activity, int, error) {
+				Expect(f.EndDate).NotTo(BeNil())
+				Expect(f.EndDate.UTC().Format("2006-01-02 15:04:05")).To(Equal("2026-05-31 00:00:00"))
+				return nil, 0, nil
+			})
+		rec := doGet("/sync/brokerage/accounts/a/activities?end_date=2026-05-30")
+		Expect(rec.Code).To(Equal(http.StatusOK))
+	})
+
 	It("forwards filters to the repository and maps DTOs", func() {
 		accRepo.EXPECT().Get(gomock.Any(), "a").Return(brokerage.Account{ID: "a"}, nil)
 		actRepo.EXPECT().List(gomock.Any(), gomock.Any()).DoAndReturn(

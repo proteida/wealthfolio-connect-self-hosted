@@ -209,6 +209,12 @@ func (h *ActivityHandler) List(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteError(w, http.StatusBadRequest, "invalid_request", "INVALID_END_DATE", "end_date must be YYYY-MM-DD")
 		return
 	}
+	if endDate != nil {
+		// Calendar dates are inclusive: convert to the exclusive next-day
+		// boundary so trades later in the requested day are not cut off.
+		next := endDate.AddDate(0, 0, 1)
+		endDate = &next
+	}
 
 	res, err := h.svc.List(r.Context(), appbrokerage.ActivityQuery{
 		AccountID: accountID,
