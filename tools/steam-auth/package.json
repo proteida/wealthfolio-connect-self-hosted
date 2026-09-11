@@ -1,0 +1,24 @@
+{
+  "name": "steam-auth",
+  "version": "1.0.0",
+  "private": true,
+  "description": "One-time Steam authentication: mint a WebBrowser refresh token for the Go service. Not used during normal operation.",
+  "type": "module",
+  "bin": {
+    "steam-auth": "./dist/index.js"
+  },
+  "scripts": {
+    "steam-auth": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit --strict"
+  },
+  "dependencies": {
+    "steam-session": "^1.9.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.6.0"
+  }
+}

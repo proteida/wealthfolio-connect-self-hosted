@@ -54,3 +54,6 @@ tools/steam-auth/*.json
 !tools/steam-auth/package.json
 !tools/steam-auth/package-lock.json
 !tools/steam-auth/tsconfig.json
+
+# Node dependencies (tools/steam-auth installs its own)
+node_modules/
