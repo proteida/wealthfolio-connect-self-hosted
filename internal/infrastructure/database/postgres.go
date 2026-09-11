@@ -127,6 +127,13 @@ type Migrator interface {
 	Models() []any
 }
 
+// DataMigrator is an optional Migrator extension for row-level data
+// migrations. It runs once per startup after AutoMigrate converges the
+// schema. Implementations must be idempotent: reruns find no work.
+type DataMigrator interface {
+	MigrateData(ctx context.Context, db *gorm.DB) error
+}
+
 // RunMigrations is the fx hook entry point that drives AutoMigrate at
 // startup.
 func RunMigrations(lc fx.Lifecycle, db *gorm.DB, m Migrator, ready *Readiness) {
@@ -141,14 +148,22 @@ func RunMigrations(lc fx.Lifecycle, db *gorm.DB, m Migrator, ready *Readiness) {
 // tests can drive it against an in-memory or mocked *gorm.DB.
 func Migrate(ctx context.Context, db *gorm.DB, m Migrator, ready *Readiness) error {
 	models := m.Models()
-	if len(models) == 0 {
+	dm, hasData := m.(DataMigrator)
+	if len(models) == 0 && !hasData {
 		if ready != nil {
 			ready.MarkReady()
 		}
 		return nil
 	}
-	if err := db.WithContext(ctx).AutoMigrate(models...); err != nil {
-		return fmt.Errorf("database: auto-migrate: %w", err)
+	if len(models) > 0 {
+		if err := db.WithContext(ctx).AutoMigrate(models...); err != nil {
+			return fmt.Errorf("database: auto-migrate: %w", err)
+		}
+	}
+	if hasData {
+		if err := dm.MigrateData(ctx, db); err != nil {
+			return fmt.Errorf("database: data migration: %w", err)
+		}
 	}
 	if ready != nil {
 		ready.MarkReady()

@@ -424,7 +424,12 @@ func dealToActivity(f *pb.OrderFill, accountID string, _ pb.TrdMarket) (brokerag
 		return brokerage.Activity{}, false
 	}
 	return brokerage.Activity{
-		ID:        sourceID,
+		// ID is account-scoped: activities.id is a global primary key,
+		// so a bare fill ID would collide across the retired per-market
+		// accounts and the merged universal account on upgrade.
+		// SourceRecordID stays global: the upsert arbiter already
+		// includes the account, and fills dedupe within it.
+		ID:        accountID + ":" + sourceID,
 		AccountID: accountID,
 		Type:      actType,
 		RawType:   rawSide,
