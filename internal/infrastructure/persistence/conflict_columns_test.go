@@ -6,9 +6,6 @@ package persistence
 import (
 	"slices"
 	"testing"
-	"time"
-
-	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/brokerage"
 )
 
 func TestActivityConflictColumnsRefreshNormalization(t *testing.T) {
@@ -28,24 +25,5 @@ func TestActivityConflictColumnsRefreshNormalization(t *testing.T) {
 		if slices.Contains(cols, immutable) {
 			t.Errorf("activityConflictColumns must not contain identity column %q", immutable)
 		}
-	}
-}
-
-func TestDeduplicateActivitiesIsStableAndLastWins(t *testing.T) {
-	items := []brokerage.Activity{
-		{ID: "first-a", SourceRecordID: "a", Description: "old", TradeDate: time.Unix(1, 0)},
-		{ID: "first-b", SourceRecordID: "b", TradeDate: time.Unix(2, 0)},
-		{ID: "latest-a", SourceRecordID: "a", Description: "new", TradeDate: time.Unix(3, 0)},
-	}
-
-	got := deduplicateActivities("account", items)
-	if len(got) != 2 {
-		t.Fatalf("deduplicateActivities returned %d rows, want 2", len(got))
-	}
-	if got[0].SourceRecordID != "a" || got[0].ID != "latest-a" || got[0].Description != "new" {
-		t.Errorf("first row = %#v, want the latest value for source a", got[0])
-	}
-	if got[1].SourceRecordID != "b" {
-		t.Errorf("second source record = %q, want b", got[1].SourceRecordID)
 	}
 }

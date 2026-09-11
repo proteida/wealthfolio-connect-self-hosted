@@ -89,25 +89,6 @@ func activityConflictColumns() []string {
 	}
 }
 
-// deduplicateActivities preserves the order in which source records first
-// appear while replacing duplicate records with their latest value. Keeping a
-// stable order makes chunk boundaries deterministic without changing the
-// batch's last-write-wins semantics.
-func deduplicateActivities(accountID string, items []brokerage.Activity) []ActivityPO {
-	positions := make(map[string]int, len(items))
-	unique := make([]ActivityPO, 0, len(items))
-	for _, item := range items {
-		po := activityFromDomain(accountID, item)
-		if position, ok := positions[po.SourceRecordID]; ok {
-			unique[position] = po
-			continue
-		}
-		positions[po.SourceRecordID] = len(unique)
-		unique = append(unique, po)
-	}
-	return unique
-}
-
 // UpsertBatch deduplicates by (account_id, source_record_id). The conflict
 // target maps to the activities_account_source_uk unique index defined on
 // ActivityPO.
@@ -115,7 +96,15 @@ func (r *activityRepo) UpsertBatch(ctx context.Context, accountID string, items 
 	if len(items) == 0 {
 		return nil
 	}
-	pos := deduplicateActivities(accountID, items)
+	unique := make(map[string]ActivityPO, len(items))
+	for _, it := range items {
+		po := activityFromDomain(accountID, it)
+		unique[po.SourceRecordID] = po
+	}
+	pos := make([]ActivityPO, 0, len(unique))
+	for _, po := range unique {
+		pos = append(pos, po)
+	}
 	conflict := clause.OnConflict{
 		Columns:   []clause.Column{{Name: "account_id"}, {Name: "source_record_id"}},
 		DoUpdates: clause.AssignmentColumns(activityConflictColumns()),
