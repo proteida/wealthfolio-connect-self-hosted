@@ -6,6 +6,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/rs/zerolog"
 	"go.uber.org/fx"
 
+	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/brokerage"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/repository"
 	domainsync "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/sync"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/config"
@@ -45,6 +47,7 @@ type Service struct {
 	holdings    repository.HoldingRepository
 	clients     []domainsync.BrokerClient
 	interval    time.Duration
+	runMu       sync.Mutex
 	mu          sync.Mutex
 	lastRun     time.Time
 }
@@ -79,12 +82,25 @@ func (s *Service) LastRun() time.Time {
 }
 
 // RunOnce executes every client sequentially, persisting partial results so
-// a slow/broken upstream does not stall the others.
+// a slow/broken upstream does not stall the others. It reports success when
+// at least one client synced; when every client fails the run is an error
+// and LastRun does not advance, distinguishing attempts from synchronization.
 func (s *Service) RunOnce(ctx context.Context) error {
+	// Manual connection refreshes and the scheduler share this gate. Coalesce
+	// overlapping requests instead of queueing another complete upstream scan.
+	if !s.runMu.TryLock() {
+		return nil
+	}
+	defer s.runMu.Unlock()
+	var errs []error
 	for _, c := range s.clients {
 		if err := s.syncOne(ctx, c); err != nil {
 			s.log.Error().Err(err).Str("client", c.ID()).Msg("upstream sync failed")
+			errs = append(errs, fmt.Errorf("%s: %w", c.ID(), err))
 		}
+	}
+	if len(s.clients) > 0 && len(errs) == len(s.clients) {
+		return fmt.Errorf("sync: all %d brokers failed: %w", len(errs), errors.Join(errs...))
 	}
 	s.mu.Lock()
 	s.lastRun = time.Now().UTC()
@@ -100,23 +116,84 @@ func (s *Service) syncOne(ctx context.Context, c domainsync.BrokerClient) error 
 	if err := s.connections.Upsert(ctx, snap.Connection); err != nil {
 		return fmt.Errorf("upsert connection: %w", err)
 	}
+	// SyncEnabled is user-owned state: a stored false suppresses every
+	// upstream write for that account. Unknown accounts (and read errors)
+	// sync normally so a lookup failure never stalls ingestion.
+	disabled := map[string]bool{}
+	partialAccounts := map[string]bool{}
+	for _, h := range snap.Holdings {
+		if h.Partial {
+			partialAccounts[h.AccountID] = true
+		}
+	}
+	enabled := make([]brokerage.Account, 0, len(snap.Accounts))
 	for _, acc := range snap.Accounts {
+		saved, err := s.accounts.Get(ctx, acc.ID)
+		if err == nil && !saved.SyncEnabled {
+			disabled[acc.ID] = true
+			continue
+		}
+		if partialAccounts[acc.ID] && err == nil {
+			// A partial snapshot must not overwrite the last complete
+			// valuation: keep the stored totals while the fresh holdings
+			// wait for a complete run.
+			acc.BalanceTotal = saved.BalanceTotal
+			acc.BalanceCurrency = saved.BalanceCurrency
+		}
+		enabled = append(enabled, acc)
+	}
+	for _, acc := range enabled {
+		// Publish completion only after the corresponding data has been
+		// saved: timestamps are cleared here and set below post-commit.
+		acc.LastTxSync = nil
+		acc.InitialTxSyncDone = false
+		acc.LastHoldingsSync = nil
+		acc.InitialHoldingsDone = false
 		if err := s.accounts.Upsert(ctx, acc); err != nil {
 			return fmt.Errorf("upsert account: %w", err)
 		}
 	}
 	for _, h := range snap.Holdings {
+		if disabled[h.AccountID] {
+			continue
+		}
+		if h.Partial {
+			// A failed upstream component must never overwrite the last
+			// complete snapshot with incomplete data.
+			s.log.Warn().Str("account", h.AccountID).Msg("skipping partial holdings snapshot")
+			continue
+		}
+		if h.CapturedAt.IsZero() {
+			h.CapturedAt = time.Now().UTC()
+		}
 		if err := s.holdings.Replace(ctx, h); err != nil {
 			return fmt.Errorf("replace holdings: %w", err)
 		}
+		captured := h.CapturedAt
+		if err := s.accounts.UpdateSyncStatus(ctx, h.AccountID, nil, &captured); err != nil {
+			return fmt.Errorf("update holdings sync status: %w", err)
+		}
 	}
 	for accID, items := range snap.Activities {
+		if disabled[accID] {
+			continue
+		}
 		if len(items) == 0 {
 			continue
 		}
 		if err := s.activities.UpsertBatch(ctx, accID, items); err != nil {
 			return fmt.Errorf("upsert activities: %w", err)
 		}
+	}
+	for _, acc := range enabled {
+		if acc.LastTxSync != nil {
+			if err := s.accounts.UpdateSyncStatus(ctx, acc.ID, acc.LastTxSync, nil); err != nil {
+				return fmt.Errorf("update transaction sync status: %w", err)
+			}
+		}
+	}
+	if committer, ok := c.(domainsync.SnapshotCommitter); ok {
+		committer.SnapshotCommitted()
 	}
 	return nil
 }
