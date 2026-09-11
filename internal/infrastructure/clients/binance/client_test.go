@@ -8,7 +8,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/brokerage"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/binance"
+	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/cexcommon"
 )
 
 func TestBinance(t *testing.T) {
@@ -21,6 +23,15 @@ type fakeFetcher struct {
 	prices   map[string]float64
 	balErr   error
 	priceErr error
+}
+
+type tradeFetcher struct {
+	fakeFetcher
+	trades []cexcommon.Trade
+}
+
+func (f *tradeFetcher) Trades(_ context.Context, _ []binance.RawBalance, _ map[string]float64) ([]cexcommon.Trade, error) {
+	return f.trades, nil
 }
 
 func (f *fakeFetcher) Account(_ context.Context) ([]binance.RawBalance, error) {
@@ -71,14 +82,39 @@ var _ = Describe("Binance Client", func() {
 			},
 			priceErr: errors.New("rate limit"),
 		})
+
 		snap, err := c.Fetch(context.Background())
 		Expect(err).NotTo(HaveOccurred())
-		// USDC still gets folded as cash; unpriced-but-owned BTC stays visible
-		// as a zero-price position instead of being dropped by the dust filter.
+		// USDC still gets folded as cash; unpriced BTC stays visible as a
+		// zero-price position instead of being erased, and the snapshot is
+		// partial so it never replaces the last complete holdings.
 		Expect(snap.Holdings[0].Balances[0].Cash).To(Equal(200.0))
+		Expect(snap.Holdings[0].Partial).To(BeTrue())
 		Expect(snap.Holdings[0].Positions).To(HaveLen(1))
 		Expect(snap.Holdings[0].Positions[0].Symbol.Symbol).To(Equal("BTC"))
-		Expect(snap.Holdings[0].Positions[0].Price).To(Equal(0.0))
+		Expect(snap.Holdings[0].Positions[0].Units).To(Equal(0.1))
+		Expect(snap.Holdings[0].Positions[0].Price).To(BeZero())
+	})
+
+	It("translates Binance fills into quote and base conversion legs", func() {
+		c := binance.New("k", "s", &tradeFetcher{
+			fakeFetcher: fakeFetcher{
+				balances: []binance.RawBalance{{Asset: "USDT", Free: 100}},
+				prices:   map[string]float64{},
+			},
+			trades: []cexcommon.Trade{{
+				ID: "t1", BaseAsset: "JITOSOL", QuoteAsset: "USDT",
+				Side: "buy", Price: 20, Quantity: 2,
+			}},
+		})
+		snap, err := c.Fetch(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		acts := snap.Activities["binance-spot"]
+		Expect(acts).To(HaveLen(2))
+		Expect(acts[0].Symbol.Symbol).To(Equal("USDT"))
+		Expect(acts[0].Type).To(Equal(brokerage.ActivitySell))
+		Expect(acts[1].Symbol.Symbol).To(Equal("JITOSOL"))
+		Expect(acts[1].Type).To(Equal(brokerage.ActivityBuy))
 	})
 
 	It("skips assets with zero combined quantity", func() {

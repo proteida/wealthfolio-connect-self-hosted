@@ -234,10 +234,18 @@ enabled. Allow this server's IP in the gateway's *Trusted IPs* list.
 
 Create a **read-only** API key (Spot account permissions are sufficient).
 
-| Name                 | Description       |
-| -------------------- | ----------------- |
-| `BINANCE_API_KEY`    | Binance API key.  |
-| `BINANCE_API_SECRET` | Binance secret.   |
+| Name                    | Description                                                                                                  |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `BINANCE_API_KEY`       | Binance API key.                                                                                             |
+| `BINANCE_API_SECRET`    | Binance secret.                                                                                              |
+| `BINANCE_TRADE_SYMBOLS` | Optional comma-separated exact Spot pairs (e.g. `BTCUSDT,ETHBTC`). Empty uses held `*USDT` pairs plus pairs with saved trades. |
+
+Spot history uses `GET /api/v3/myTrades` in small bounded batches (at most
+20 history requests per sync, rotating fairly across pairs). Trade cursors
+are derived from persisted activities, so a failed write is retried instead
+of skipped. All requests share a local 600 request-weight/minute guard
+(10% of Binance's 6000 limit) with backoff on `Retry-After`/`-1003`
+responses, so one sync can no longer exhaust the IP budget.
 
 ### OKX CEX (signed v5 REST)
 

@@ -50,6 +50,16 @@ var _ = Describe("Config.LoadFrom", func() {
 		})
 	})
 
+	It("parses exact Binance history symbols and leaves automatic selection as the default", func() {
+		cfg, err := config.LoadFrom(mapLoader(base))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Crypto.BinanceTradeSymbols).To(BeEmpty())
+		base["BINANCE_TRADE_SYMBOLS"] = " ethbtc, BTCUSDC, ,"
+		cfg, err = config.LoadFrom(mapLoader(base))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Crypto.BinanceTradeSymbols).To(Equal([]string{"ETHBTC", "BTCUSDC"}))
+	})
+
 	It("parses TON wallets comma-separated while preserving address case", func() {
 		cfg, err := config.LoadFrom(mapLoader(base))
 		Expect(err).NotTo(HaveOccurred())

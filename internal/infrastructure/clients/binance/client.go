@@ -10,11 +10,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
-	"strings"
+	"time"
 
 	binsdk "github.com/adshao/go-binance/v2"
+	"github.com/rs/zerolog"
 
+	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/repository"
 	domainsync "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/sync"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/cexcommon"
 )
@@ -37,15 +40,36 @@ type RawBalance struct {
 type Client struct {
 	apiKey, secret string
 	fetcher        Fetcher
+	log            zerolog.Logger
 }
 
 // New builds a client. Pass nil fetcher to use the real SDK.
 func New(apiKey, secret string, f Fetcher) *Client {
 	if f == nil {
-		f = &realFetcher{client: binsdk.NewClient(apiKey, secret)}
+		sdk := binsdk.NewClient(apiKey, secret)
+		sdk.HTTPClient = &http.Client{Timeout: 15 * time.Second, Transport: newWeightTransport(http.DefaultTransport)}
+		f = &realFetcher{client: sdk}
 	}
-	return &Client{apiKey: apiKey, secret: secret, fetcher: f}
+	return &Client{apiKey: apiKey, secret: secret, fetcher: f, log: zerolog.Nop()}
 }
+
+// ConfigureHistory sets the durable source of trade cursors and optional exact
+// trading pairs. Call during construction, before starting synchronization.
+func (c *Client) ConfigureHistory(history repository.ActivityRepository, symbols []string) {
+	if f, ok := c.fetcher.(*realFetcher); ok {
+		f.history = history
+		f.symbols = symbols
+	}
+}
+
+func (c *Client) SnapshotCommitted() {
+	if f, ok := c.fetcher.(*realFetcher); ok {
+		f.progress = f.pending
+	}
+}
+
+// SetLogger attaches structured logging for incomplete history requests.
+func (c *Client) SetLogger(log zerolog.Logger) { c.log = log }
 
 // ID returns the slug used by sync orchestration.
 func (c *Client) ID() string { return "binance" }
@@ -61,12 +85,26 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 	}
 	prices, err := c.fetcher.Prices(ctx)
 	if err != nil {
-		// Prices are best-effort: without them positions just have zero
-		// USD valuation and most will be filtered out by the dust filter,
-		// but cash stablecoins still flow through.
+		// Prices are best-effort: without them positions carry zero USD
+		// valuation but owned assets stay visible, and the snapshot is
+		// marked partial so it never replaces the last complete one.
 		prices = map[string]float64{}
 	}
-	return cexcommon.Translate("binance", "Binance", buildSnapshot(balances, prices)), nil
+	snapshot := buildSnapshot(balances, prices)
+	if err != nil {
+		snapshot.Partial = true
+	}
+	if tf, ok := c.fetcher.(TradeFetcher); ok {
+		trades, tradeErr := tf.Trades(ctx, balances, prices)
+		snapshot.Trades = trades
+		snapshot.ActivitiesFetched = tradeErr == nil
+		if errors.Is(tradeErr, errHistoryPending) {
+			c.log.Info().Msg("binance: history budget reached; continuing from saved trade IDs on next sync")
+		} else if tradeErr != nil {
+			c.log.Warn().Err(tradeErr).Msg("binance: transaction history incomplete")
+		}
+	}
+	return cexcommon.Translate("binance", "Binance", snapshot), nil
 }
 
 // buildSnapshot is exposed via BuildSnapshotForTest so external tests can
@@ -78,7 +116,8 @@ func buildSnapshot(balances []RawBalance, prices map[string]float64) cexcommon.S
 		if qty == 0 {
 			continue
 		}
-		asset := strings.ToUpper(b.Asset)
+
+		asset := cexcommon.NormalizeAsset(b.Asset)
 		var price, usd float64
 		if cexcommon.IsStablecoin(asset) {
 			price = 1
@@ -100,7 +139,11 @@ func buildSnapshot(balances []RawBalance, prices map[string]float64) cexcommon.S
 // ===================== real Binance SDK fetcher =====================
 
 type realFetcher struct {
-	client *binsdk.Client
+	client   *binsdk.Client
+	history  repository.ActivityRepository
+	symbols  []string
+	progress historyProgress
+	pending  historyProgress
 }
 
 // Account fetches all non-zero balances from the user's Binance spot account.
