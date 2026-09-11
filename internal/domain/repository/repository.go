@@ -33,7 +33,9 @@ type AccountRepository interface {
 	SetSyncEnabled(ctx context.Context, accountID string, enabled bool) error
 }
 
-// ActivityFilter narrows down a paginated activity query.
+// ActivityFilter narrows down a paginated activity query. StartDate is an
+// inclusive lower bound; EndDate is an exclusive upper bound (inclusive
+// calendar dates are converted to the next-day boundary by callers).
 type ActivityFilter struct {
 	AccountID string
 	StartDate *time.Time
@@ -54,6 +56,28 @@ type ActivityRepository interface {
 type HoldingRepository interface {
 	GetLatest(ctx context.Context, accountID string) (brokerage.Holdings, error)
 	Replace(ctx context.Context, snapshot brokerage.Holdings) error
+}
+
+// SyncCursor is durable incremental-sync progress for one scope (e.g.
+// "okx-fills", "ton-tail-<wallet>"). Position is an opaque resume marker;
+// Complete records a proven-exhausted range. Cursors advance only after the
+// data they cover is persisted (see domainsync.SnapshotCommitter), so a
+// failed write replays instead of skipping rows.
+type SyncCursor struct {
+	Scope     string
+	Position  string
+	Complete  bool
+	UpdatedAt time.Time
+}
+
+// CursorRepository persists sync cursors.
+type CursorRepository interface {
+	// Get returns the cursor for scope, or ErrNotFound when absent.
+	Get(ctx context.Context, scope string) (SyncCursor, error)
+	// Set creates or replaces the cursor for scope.
+	Set(ctx context.Context, c SyncCursor) error
+	// Delete clears the cursor for scope.
+	Delete(ctx context.Context, scope string) error
 }
 
 // TokenMetadata is the audit row stored each time a JWT is issued.

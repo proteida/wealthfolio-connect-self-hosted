@@ -146,9 +146,14 @@ const (
 
 // Activity is one line of trade history.
 type Activity struct {
-	ID                  string
-	AccountID           string
-	Symbol              *Symbol
+	ID        string
+	AccountID string
+	Symbol    *Symbol
+	// IsExternal marks transfers crossing the tracked-account boundary
+	// (counterparty is none of our wallets). The app persists it as
+	// metadata.flow.is_external; tracked-counterparty legs send explicit
+	// false so the app validates them as internal pairs.
+	IsExternal          bool
 	OptionSymbol        *OptionSymbol
 	Price               float64
 	Units               float64
@@ -162,6 +167,7 @@ type Activity struct {
 	TradeDate           time.Time
 	SettlementDate      *time.Time
 	Fee                 float64
+	FeeAsset            string
 	FxRate              *float64
 	Institution         string
 	ExternalReferenceID string

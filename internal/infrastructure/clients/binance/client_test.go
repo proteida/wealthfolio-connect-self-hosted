@@ -73,10 +73,12 @@ var _ = Describe("Binance Client", func() {
 		})
 		snap, err := c.Fetch(context.Background())
 		Expect(err).NotTo(HaveOccurred())
-		// USDC still gets folded as cash; BTC has zero USD value so it's
-		// dropped by the dust filter.
+		// USDC still gets folded as cash; unpriced-but-owned BTC stays visible
+		// as a zero-price position instead of being dropped by the dust filter.
 		Expect(snap.Holdings[0].Balances[0].Cash).To(Equal(200.0))
-		Expect(snap.Holdings[0].Positions).To(BeEmpty())
+		Expect(snap.Holdings[0].Positions).To(HaveLen(1))
+		Expect(snap.Holdings[0].Positions[0].Symbol.Symbol).To(Equal("BTC"))
+		Expect(snap.Holdings[0].Positions[0].Price).To(Equal(0.0))
 	})
 
 	It("skips assets with zero combined quantity", func() {

@@ -267,35 +267,59 @@ func TestFutuTrdSide_AllBranches(t *testing.T) {
 func TestDealTimestamp_Unix(t *testing.T) {
 	ts := float64(1700000000)
 	f := &pb.OrderFill{CreateTimestamp: &ts}
-	got := dealTimestamp(f)
-	if got.Unix() != 1700000000 {
-		t.Errorf("expected unix 1700000000, got %d", got.Unix())
+	got, ok := dealTimestamp(f)
+	if !ok || got.Unix() != 1700000000 {
+		t.Errorf("expected unix 1700000000, got %d (ok=%v)", got.Unix(), ok)
 	}
 }
 
 func TestDealTimestamp_StringFormat(t *testing.T) {
 	s := "2024-01-15 09:30:00"
 	f := &pb.OrderFill{CreateTime: &s}
-	got := dealTimestamp(f)
-	if got.Year() != 2024 || got.Month() != 1 || got.Day() != 15 {
-		t.Errorf("expected 2024-01-15, got %v", got)
+	got, ok := dealTimestamp(f)
+	if !ok || got.Year() != 2024 || got.Month() != 1 || got.Day() != 15 {
+		t.Errorf("expected 2024-01-15, got %v (ok=%v)", got, ok)
 	}
 }
 
 func TestDealTimestamp_StringFormatWithMS(t *testing.T) {
 	s := "2024-01-15 09:30:00.123"
 	f := &pb.OrderFill{CreateTime: &s}
-	got := dealTimestamp(f)
-	if got.Year() != 2024 || got.Month() != 1 || got.Day() != 15 {
-		t.Errorf("expected 2024-01-15, got %v", got)
+	got, ok := dealTimestamp(f)
+	if !ok || got.Year() != 2024 || got.Month() != 1 || got.Day() != 15 {
+		t.Errorf("expected 2024-01-15, got %v (ok=%v)", got, ok)
 	}
 }
 
-func TestDealTimestamp_Fallback(t *testing.T) {
+func TestDealTimestamp_RejectsUnparseable(t *testing.T) {
 	f := &pb.OrderFill{}
-	got := dealTimestamp(f)
-	if time.Since(got) > time.Minute {
-		t.Errorf("expected ~now, got %v", got)
+	if _, ok := dealTimestamp(f); ok {
+		t.Fatal("empty timestamps must be rejected, never stamped with now")
+	}
+	bad := "2024-13-45 99:99:99"
+	f = &pb.OrderFill{CreateTime: &bad}
+	if _, ok := dealTimestamp(f); ok {
+		t.Fatal("garbage timestamps must be rejected")
+	}
+}
+
+func TestClassifySecurity_UsesAuthoritativeMarket(t *testing.T) {
+	// Japanese numeric code: shape alone says Hong Kong, SecMarket says Japan.
+	got, ok := classifySecurity("7203", pb.TrdSecMarket_TrdSecMarket_JP)
+	if !ok || got.currency != "JPY" || got.exchangeCode != "TSE" || got.symbol != "7203.T" {
+		t.Fatalf("JP classification = %+v, %v", got, ok)
+	}
+	got, ok = classifySecurity("600519", pb.TrdSecMarket_TrdSecMarket_CN_SH)
+	if !ok || got.currency != "CNH" || got.symbol != "600519.SS" {
+		t.Fatalf("CN classification = %+v, %v", got, ok)
+	}
+	// Unknown market falls back to shape heuristics.
+	got, ok = classifySecurity("00700", pb.TrdSecMarket_TrdSecMarket_Unknown)
+	if !ok || got.symbol != "0700.HK" {
+		t.Fatalf("fallback classification = %+v, %v", got, ok)
+	}
+	if _, ok = classifySecurity("", pb.TrdSecMarket_TrdSecMarket_HK); ok {
+		t.Fatal("empty code must not classify")
 	}
 }
 
@@ -332,9 +356,10 @@ func TestDealToActivity_FallbackFillID(t *testing.T) {
 	fillID := uint64(999)
 	code := "00700"
 	name := "Tencent"
+	ts := float64(1700000000)
 	f := &pb.OrderFill{
 		Qty: &qty, Price: &price, TrdSide: &side,
-		FillID: &fillID, Code: &code, Name: &name,
+		FillID: &fillID, Code: &code, Name: &name, CreateTimestamp: &ts,
 	}
 	a, ok := dealToActivity(f, "acc1", pb.TrdMarket_TrdMarket_HK)
 	if !ok {
@@ -342,6 +367,19 @@ func TestDealToActivity_FallbackFillID(t *testing.T) {
 	}
 	if a.SourceRecordID != "999" {
 		t.Errorf("expected source record ID 999, got %q", a.SourceRecordID)
+	}
+	// The row ID is account-scoped so the same fill can coexist under a
+	// retired per-market account and the merged universal account without
+	// violating the global activities primary key.
+	if a.ID != "acc1:999" {
+		t.Errorf("expected account-scoped ID acc1:999, got %q", a.ID)
+	}
+	b, ok := dealToActivity(f, "acc2", pb.TrdMarket_TrdMarket_HK)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if b.ID == a.ID {
+		t.Errorf("same fill under two accounts must not share an ID: %q", a.ID)
 	}
 }
 
@@ -362,9 +400,10 @@ func TestDealToActivity_Success(t *testing.T) {
 	code := "00700"
 	name := "Tencent"
 	fillIDEx := "fill-abc"
+	ts := float64(1700000000)
 	f := &pb.OrderFill{
 		Qty: &qty, Price: &price, TrdSide: &side,
-		FillIDEx: &fillIDEx, Code: &code, Name: &name,
+		FillIDEx: &fillIDEx, Code: &code, Name: &name, CreateTimestamp: &ts,
 	}
 	a, ok := dealToActivity(f, "acc1", pb.TrdMarket_TrdMarket_HK)
 	if !ok {
@@ -486,9 +525,10 @@ func TestDealToActivity_USCodeRegardlessOfMkt(t *testing.T) {
 	fillIDEx := "fill-us"
 	code := "AAPL"
 	name := "Apple"
+	ts := float64(1700000000)
 	f := &pb.OrderFill{
 		Qty: &qty, Price: &price, TrdSide: &side,
-		FillIDEx: &fillIDEx, Code: &code, Name: &name,
+		FillIDEx: &fillIDEx, Code: &code, Name: &name, CreateTimestamp: &ts,
 	}
 	a, ok := dealToActivity(f, "acc1", pb.TrdMarket_TrdMarket_HK)
 	if !ok {
