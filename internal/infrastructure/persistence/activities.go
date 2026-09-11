@@ -36,7 +36,9 @@ func (r *activityRepo) List(ctx context.Context, f repository.ActivityFilter) ([
 		q = q.Where("trade_date >= ?", *f.StartDate)
 	}
 	if f.EndDate != nil {
-		q = q.Where("trade_date <= ?", *f.EndDate)
+		// EndDate is an exclusive upper bound (callers convert inclusive
+		// calendar dates to the next-day boundary).
+		q = q.Where("trade_date < ?", *f.EndDate)
 	}
 
 	var total int64

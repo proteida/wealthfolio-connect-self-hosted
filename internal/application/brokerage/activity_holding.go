@@ -13,6 +13,7 @@ import (
 )
 
 // ActivityQuery is the user-facing query for the activities endpoint.
+// EndDate is an exclusive upper bound.
 type ActivityQuery struct {
 	AccountID string
 	StartDate *time.Time

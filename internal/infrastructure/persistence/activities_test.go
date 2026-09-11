@@ -25,7 +25,7 @@ var activityCols = []string{
 	"type", "subtype", "raw_type", "option_type", "description",
 	"trade_date", "settlement_date", "fee", "fx_rate",
 	"institution", "external_reference_id", "provider_type", "source_system",
-	"source_group_id", "needs_review",
+	"source_group_id", "needs_review", "is_external",
 }
 
 func activityRow(id, accountID string, withSymbol bool, trade time.Time) []driver.Value {
@@ -42,7 +42,7 @@ func activityRow(id, accountID string, withSymbol bool, trade time.Time) []drive
 		"BUY", "", "BUY_MARKET", "", "buy 10 AAPL",
 		trade, nil, 1.5, nil,
 		"Futu", "ext-1", "CUSTOM", "CUSTOM",
-		"", false,
+		"", false, false,
 	}
 }
 
@@ -82,6 +82,21 @@ var _ = Describe("ActivityRepository", func() {
 		Expect(out[0].ID).To(Equal("a1"))
 		Expect(out[0].Symbol).NotTo(BeNil())
 		Expect(out[0].Symbol.Symbol).To(Equal("AAPL"))
+		Expect(mock.ExpectationsWereMet()).To(Succeed())
+	})
+
+	It("round-trips the external flag", func() {
+		mock.ExpectQuery(rx(`SELECT count(*)`)).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+		cols := append([]string{}, activityCols...)
+		row := activityRow("x1", "acc", false, now)
+		row[len(row)-1] = true
+		mock.ExpectQuery(rx(`FROM "activities"`)).
+			WillReturnRows(sqlmock.NewRows(cols).AddRow(row...))
+		out, _, err := repo.List(ctx, repository.ActivityFilter{AccountID: "acc"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(HaveLen(1))
+		Expect(out[0].IsExternal).To(BeTrue())
 		Expect(mock.ExpectationsWereMet()).To(Succeed())
 	})
 

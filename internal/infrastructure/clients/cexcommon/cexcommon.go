@@ -33,7 +33,7 @@ type Trade struct {
 	Price     float64
 	Quantity  float64
 	Fee       float64
-	FeeAsset  string
+	FeeAsset  string // denomination of Fee, e.g. "USDT"; empty when unknown
 	Timestamp time.Time
 }
 
@@ -42,6 +42,12 @@ type Snapshot struct {
 	Balances          []Balance
 	Trades            []Trade
 	ActivitiesFetched bool
+	// FeePrice returns the USD price of asset at the given time, or a
+	// non-positive value when the price is unavailable. It is only
+	// consulted for trade fees denominated in a non-USD asset that also
+	// differs from the traded asset; a nil hook means every such fee
+	// normalises to 0.
+	FeePrice func(asset string, at time.Time) float64
 }
 
 // Translate folds a CEX snapshot into a BrokerSnapshot. The resulting
@@ -133,6 +139,7 @@ func Translate(slug, displayName string, s Snapshot) domainsync.BrokerSnapshot {
 			if strings.EqualFold(t.Side, "sell") {
 				actType = brokerage.ActivitySell
 			}
+			fee, feeAsset := normalizeFee(t, s.FeePrice)
 			acts = append(acts, brokerage.Activity{
 				ID:        t.ID,
 				AccountID: accountID,
@@ -141,7 +148,8 @@ func Translate(slug, displayName string, s Snapshot) domainsync.BrokerSnapshot {
 				Price:     t.Price,
 				Units:     t.Quantity,
 				Amount:    t.Price * t.Quantity,
-				Fee:       t.Fee,
+				Fee:       fee,
+				FeeAsset:  feeAsset,
 				Currency:  brokerage.Currency{Code: "USD"},
 				Symbol: &brokerage.Symbol{
 					Symbol:    t.Symbol,
@@ -174,4 +182,70 @@ func IsStablecoin(s string) bool {
 		return true
 	}
 	return false
+}
+
+// quoteSuffixes are stripped (longest first) to recover the base asset from
+// concatenated pair symbols such as "BTCUSDT" that carry no separator.
+var quoteSuffixes = []string{
+	"USDT", "USDC", "FDUSD", "USDS", "TUSD", "DAI", "FRAX",
+	"BUSD", "USDD", "PYUSD", "USD", "EUR", "GBP",
+	"BTC", "ETH", "BNB", "SOL",
+}
+
+// tradeBaseAsset extracts the traded (base) asset from a pair symbol in
+// either "BTC-USDT" or "BTCUSDT" form. It returns "" when the base cannot
+// be determined.
+func tradeBaseAsset(symbol string) string {
+	sym := strings.ToUpper(strings.TrimSpace(symbol))
+	if i := strings.Index(sym, "-"); i > 0 {
+		return sym[:i]
+	}
+	for _, q := range quoteSuffixes {
+		if len(sym) > len(q) && strings.HasSuffix(sym, q) {
+			return strings.TrimSuffix(sym, q)
+		}
+	}
+	return ""
+}
+
+// normalizeFee converts a trade fee into USD following a fixed fallback
+// chain so downstream consumers always see a USD-denominated amount:
+//
+//  1. Zero fee, or an unknown (empty) denomination, passes through untouched
+//     and keeps the previous assume-USD behaviour.
+//  2. USD and USD-pegged stablecoins pass through 1:1.
+//  3. A fee paid in the traded asset itself reuses the trade's own fill
+//     price, provided the trade carries a timestamp; without one the fee
+//     normalises to 0.
+//  4. Any other asset is priced via priceFn; when the hook is nil or the
+//     price is unavailable the fee normalises to 0.
+//
+// The returned asset is always "USD" once a value was derived, so the
+// amount and its label stay consistent.
+func normalizeFee(t Trade, priceFn func(asset string, at time.Time) float64) (float64, string) {
+	if t.Fee == 0 {
+		if strings.TrimSpace(t.FeeAsset) == "" {
+			return 0, "USD"
+		}
+		return 0, strings.ToUpper(strings.TrimSpace(t.FeeAsset))
+	}
+	feeAsset := strings.ToUpper(strings.TrimSpace(t.FeeAsset))
+	if feeAsset == "" {
+		return t.Fee, "USD"
+	}
+	if IsStablecoin(feeAsset) {
+		return t.Fee, "USD"
+	}
+	if base := tradeBaseAsset(t.Symbol); base != "" && feeAsset == base {
+		if t.Timestamp.IsZero() {
+			return 0, "USD"
+		}
+		return t.Fee * t.Price, "USD"
+	}
+	if priceFn != nil {
+		if p := priceFn(feeAsset, t.Timestamp); p > 0 {
+			return t.Fee * p, "USD"
+		}
+	}
+	return 0, "USD"
 }

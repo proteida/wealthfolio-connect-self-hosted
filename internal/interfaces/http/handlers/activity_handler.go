@@ -89,6 +89,7 @@ type activityDTO struct {
 	TradeDate           time.Time        `json:"trade_date"`
 	SettlementDate      *time.Time       `json:"settlement_date"`
 	Fee                 float64          `json:"fee"`
+	FeeAsset            string           `json:"fee_asset,omitempty"`
 	FxRate              *float64         `json:"fx_rate"`
 	Institution         string           `json:"institution,omitempty"`
 	ExternalReferenceID string           `json:"external_reference_id,omitempty"`
@@ -153,6 +154,7 @@ func toActivityDTO(a brokerage.Activity) activityDTO {
 		TradeDate:           a.TradeDate,
 		SettlementDate:      a.SettlementDate,
 		Fee:                 a.Fee,
+		FeeAsset:            a.FeeAsset,
 		FxRate:              a.FxRate,
 		Institution:         a.Institution,
 		ExternalReferenceID: a.ExternalReferenceID,
@@ -181,6 +183,13 @@ func toActivityDTO(a brokerage.Activity) activityDTO {
 		s := a.SourceGroupID
 		dto.SourceGroupID = &s
 	}
+	// Transfers always carry an explicit performance-boundary flag so the
+	// app can validate internal pairs (tracked counterparty) instead of
+	// leaving them unpaired, and treat untracked counterparties as
+	// external. Other activity types omit it.
+	if a.Type == brokerage.ActivityTransferIn || a.Type == brokerage.ActivityTransferOut {
+		dto.MappingMetadata = map[string]any{"flow": map[string]any{"is_external": a.IsExternal}}
+	}
 	return dto
 }
 
@@ -208,6 +217,12 @@ func (h *ActivityHandler) List(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		middleware.WriteError(w, http.StatusBadRequest, "invalid_request", "INVALID_END_DATE", "end_date must be YYYY-MM-DD")
 		return
+	}
+	if endDate != nil {
+		// Calendar dates are inclusive: convert to the exclusive next-day
+		// boundary so trades later in the requested day are not cut off.
+		next := endDate.AddDate(0, 0, 1)
+		endDate = &next
 	}
 
 	res, err := h.svc.List(r.Context(), appbrokerage.ActivityQuery{

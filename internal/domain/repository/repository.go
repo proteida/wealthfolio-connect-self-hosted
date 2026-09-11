@@ -33,7 +33,9 @@ type AccountRepository interface {
 	SetSyncEnabled(ctx context.Context, accountID string, enabled bool) error
 }
 
-// ActivityFilter narrows down a paginated activity query.
+// ActivityFilter narrows down a paginated activity query. StartDate is an
+// inclusive lower bound; EndDate is an exclusive upper bound (inclusive
+// calendar dates are converted to the next-day boundary by callers).
 type ActivityFilter struct {
 	AccountID string
 	StartDate *time.Time
