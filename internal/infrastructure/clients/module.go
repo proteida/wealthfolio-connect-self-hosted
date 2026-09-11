@@ -6,34 +6,33 @@ package clients
 
 import (
 	"os"
+	"strings"
 
 	"github.com/rs/zerolog"
 	"go.uber.org/fx"
 
 	appsync "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/sync"
+	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/repository"
+	domainsync "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/sync"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/binance"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/bitget"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/futu"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/hyperliquid"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/ibkr"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/okx"
+	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/ton"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/config"
 )
 
 // Module registers every BrokerClient into the broker_clients fx group.
 //
-// Every constructor below is wrapped in appsync.AsBrokerClient so it lands
-// in the same fx group consumed by application/sync.Service. Constructors
-// always return a *Client so unit tests can also reach the concrete type.
+// Broker connections retain their existing wiring. Crypto integrations are
+// flattened into the same group only when their credentials are configured.
 var Module = fx.Module("infrastructure.clients",
 	fx.Provide(
 		appsync.AsBrokerClient(NewFutu),
 		appsync.AsBrokerClient(NewIBKR),
-		appsync.AsBrokerClient(NewBinance),
-		appsync.AsBrokerClient(NewOKXCEX),
-		appsync.AsBrokerClient(NewBitget),
-		appsync.AsBrokerClient(NewHyperliquid),
-		appsync.AsBrokerClient(NewOKXWeb3),
+		NewCryptoClients,
 	),
 )
 
@@ -57,17 +56,23 @@ func NewIBKR(cfg *config.Config) *ibkr.Client {
 }
 
 // NewBinance builds the Binance Spot BrokerClient.
-func NewBinance(cfg *config.Config) *binance.Client {
-	return binance.New(cfg.Crypto.BinanceAPIKey, cfg.Crypto.BinanceSecret, nil)
+func NewBinance(cfg *config.Config, log zerolog.Logger, history repository.ActivityRepository) *binance.Client {
+	c := binance.New(cfg.Crypto.BinanceAPIKey, cfg.Crypto.BinanceSecret, nil)
+	c.SetLogger(log.With().Str("client", "binance").Logger())
+	c.ConfigureHistory(history, cfg.Crypto.BinanceTradeSymbols)
+	return c
 }
 
 // NewOKXCEX builds the OKX CEX BrokerClient.
-func NewOKXCEX(cfg *config.Config) *okx.CEXClient {
-	return okx.NewCEX(okx.Credentials{
+func NewOKXCEX(cfg *config.Config, history repository.ActivityRepository, cursors repository.CursorRepository) *okx.CEXClient {
+	c := okx.NewCEX(okx.Credentials{
 		APIKey:     cfg.Crypto.OKXAPIKey,
 		Secret:     cfg.Crypto.OKXSecret,
 		Passphrase: cfg.Crypto.OKXPassphrase,
 	}, "", nil)
+	c.ConfigureHistory(history)
+	c.ConfigureCursors(cursors)
+	return c
 }
 
 // NewOKXWeb3 builds the OKX Web3 BrokerClient that fans out across every
@@ -105,4 +110,62 @@ func NewBitget(cfg *config.Config) *bitget.Client {
 // NewHyperliquid builds the Hyperliquid BrokerClient.
 func NewHyperliquid(cfg *config.Config) *hyperliquid.Client {
 	return hyperliquid.New(cfg.Crypto.HyperliquidWallet, "", nil)
+}
+
+// NewTON builds the TON Center BrokerClient tracking the configured wallets.
+func NewTON(cfg *config.Config, log zerolog.Logger, cursors repository.CursorRepository, history repository.ActivityRepository) *ton.Client {
+	c := ton.New(cfg.Crypto.TONCenterAPIKey, cfg.Crypto.TONWallets, "", nil)
+	c.SetLogger(log.With().Str("client", "ton").Logger())
+	c.ConfigureCursors(cursors)
+	c.ConfigureHistory(history)
+	return c
+}
+
+// CryptoClients is the flattened fx group of configured crypto integrations.
+type CryptoClients struct {
+	fx.Out
+	Clients []domainsync.BrokerClient `group:"broker_clients,flatten"`
+}
+
+// NewCryptoClients registers only integrations whose required settings exist.
+// Partial credentials produce one startup warning, never recurring API calls.
+func NewCryptoClients(cfg *config.Config, log zerolog.Logger, history repository.ActivityRepository, cursors repository.CursorRepository) CryptoClients {
+	out := CryptoClients{}
+	enabled := func(name string, fields ...string) bool {
+		count := 0
+		for _, field := range fields {
+			if strings.TrimSpace(field) != "" {
+				count++
+			}
+		}
+		if count == len(fields) {
+			return true
+		}
+		if count > 0 {
+			log.Warn().Str("client", name).Msg("integration disabled: incomplete configuration")
+		}
+		return false
+	}
+	if enabled("binance", cfg.Crypto.BinanceAPIKey, cfg.Crypto.BinanceSecret) {
+		out.Clients = append(out.Clients, NewBinance(cfg, log, history))
+	}
+	if enabled("okx", cfg.Crypto.OKXAPIKey, cfg.Crypto.OKXSecret, cfg.Crypto.OKXPassphrase) {
+		out.Clients = append(out.Clients, NewOKXCEX(cfg, history, cursors))
+	}
+	if enabled("bitget", cfg.Crypto.BitgetAPIKey, cfg.Crypto.BitgetSecret, cfg.Crypto.BitgetPassphrase) {
+		out.Clients = append(out.Clients, NewBitget(cfg))
+	}
+	if enabled("hyperliquid", cfg.Crypto.HyperliquidWallet) {
+		out.Clients = append(out.Clients, NewHyperliquid(cfg))
+	}
+	if len(cfg.DefiWallets) > 0 && enabled("okx_web3", cfg.Crypto.OKXWeb3APIKey, cfg.Crypto.OKXWeb3Secret, cfg.Crypto.OKXWeb3Passphrase) {
+		out.Clients = append(out.Clients, NewOKXWeb3(cfg, log))
+	}
+	if len(cfg.Crypto.TONWallets) > 0 {
+		if strings.TrimSpace(cfg.Crypto.TONCenterAPIKey) == "" {
+			log.Warn().Msg("ton enabled without TONCENTER_API_KEY: 1 RPS anonymous quota applies")
+		}
+		out.Clients = append(out.Clients, NewTON(cfg, log, cursors, history))
+	}
+	return out
 }
