@@ -115,7 +115,7 @@ var _ = Describe("Shared OKX signing and CEX compatibility", func() {
 		Expect(snap.Activities["okx-spot"][0].Type).To(Equal(brokerage.ActivitySell))
 		Expect(snap.Activities["okx-spot"][0].Symbol.Symbol).To(Equal("ETH"))
 		Expect(snap.Activities["okx-spot"][0].Fee).To(Equal(0.1))
-		Expect(snap.Activities["okx-spot"][0].FeeAsset).To(Equal("USDT"))
+		Expect(snap.Activities["okx-spot"][0].FeeAsset).To(Equal("USD"))
 	})
 	It("reports pending on full pages and resumes the backfill", func() {
 		var cursors []string
