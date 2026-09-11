@@ -47,7 +47,28 @@ var _ = Describe("Config.LoadFrom", func() {
 			Expect(cfg.IBKR.Port).To(Equal(4001))
 			Expect(cfg.IBKR.ClientID).To(Equal(int64(17)))
 			Expect(cfg.DefiWallets).To(BeEmpty())
+			Expect(cfg.Steam.SteamID).To(BeEmpty())
+			Expect(cfg.Steam.PriceTTL).To(Equal(20 * time.Minute))
+			Expect(cfg.Steam.Currency).To(Equal(1))
 		})
+	})
+
+	It("parses Steam credentials and tuning", func() {
+		cfg, err := config.LoadFrom(mapLoader(base))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Steam.APIKey).To(BeEmpty())
+		base["STEAM_ID"] = "76561198000000000"
+		base["STEAM_API_KEY"] = "k"
+		base["STEAM_SESSION"] = "sessionid=abc"
+		base["STEAM_PRICE_TTL_MINUTES"] = "30"
+		base["STEAM_CURRENCY"] = "3"
+		cfg, err = config.LoadFrom(mapLoader(base))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Steam.SteamID).To(Equal("76561198000000000"))
+		Expect(cfg.Steam.APIKey).To(Equal("k"))
+		Expect(cfg.Steam.Session).To(Equal("sessionid=abc"))
+		Expect(cfg.Steam.PriceTTL).To(Equal(30 * time.Minute))
+		Expect(cfg.Steam.Currency).To(Equal(3))
 	})
 
 	It("parses exact Binance history symbols and leaves automatic selection as the default", func() {

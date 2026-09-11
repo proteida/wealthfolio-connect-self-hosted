@@ -131,6 +131,27 @@ type Config struct {
 
 	// On-chain wallets fanned out through the OKX Web3 DEX integration.
 	DefiWallets []DefiWallet
+
+	// Steam CS2 inventory tracking (community + Web API, no third parties).
+	Steam SteamConfig
+}
+
+// SteamConfig holds Steam credentials and tuning. Session cookies and the
+// Web API key are sensitive: they live in the environment only, are never
+// persisted to normal tables, and must never be logged.
+type SteamConfig struct {
+	// SteamID is the steamid64 whose CS2 inventory is tracked.
+	SteamID string
+	// APIKey is the Steam Web API key (trade history only).
+	APIKey string
+	// Session holds raw Steam Community session cookies for the private
+	// inventory-history and market-history endpoints. Empty means only
+	// public endpoints are usable.
+	Session string
+	// PriceTTL bounds caching of current market prices.
+	PriceTTL time.Duration
+	// Currency is the Steam wallet currency code for market prices (1 = USD).
+	Currency int
 }
 
 // Loader is the function shape used internally; exposed for tests.
@@ -288,6 +309,23 @@ func LoadFrom(get Loader) (*Config, error) {
 			return nil, fmt.Errorf("config: DEFI_WALLETS is not valid JSON: %w", err)
 		}
 		cfg.DefiWallets = wallets
+	}
+
+	// Steam CS2 inventory (all optional; empty disables the integration).
+	priceTTLMin, err := getInt(get, "STEAM_PRICE_TTL_MINUTES", 20)
+	if err != nil {
+		return nil, err
+	}
+	steamCurrency, err := getInt(get, "STEAM_CURRENCY", 1)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Steam = SteamConfig{
+		SteamID:  strings.TrimSpace(getString(get, "STEAM_ID", "")),
+		APIKey:   strings.TrimSpace(getString(get, "STEAM_API_KEY", "")),
+		Session:  strings.TrimSpace(getString(get, "STEAM_SESSION", "")),
+		PriceTTL: time.Duration(priceTTLMin) * time.Minute,
+		Currency: steamCurrency,
 	}
 
 	return cfg, nil
