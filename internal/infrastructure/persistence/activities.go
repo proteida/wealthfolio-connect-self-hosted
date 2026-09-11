@@ -60,6 +60,37 @@ func (r *activityRepo) List(ctx context.Context, f repository.ActivityFilter) ([
 	return out, int(total), nil
 }
 
+// activityUpsertChunkSize bounds a single INSERT's bind parameters. ActivityPO
+// carries ~40 columns, and PostgreSQL's pgx extended protocol rejects
+// statements with more than 65,535 parameters, so an uncapped batch (e.g.
+// 1,000 fills normalized into 2,000 rows) fails and the sync retries the
+// same oversized batch forever.
+const activityUpsertChunkSize = 1000
+
+// activityConflictColumns lists every mutable normalized column refreshed
+// when an activity upsert hits the (account_id, source_record_id) conflict.
+// Identity (id, account_id, source_record_id, external_reference_id) stays
+// immutable so re-syncs update rows in place; everything else — including
+// is_external, source_group_id, symbol metadata and review state — follows
+// the latest normalization. A partial update list leaves financially
+// relevant metadata stale (e.g. a transfer that becomes internal when a
+// counterparty is tracked would keep its original external flag forever).
+func activityConflictColumns() []string {
+	return []string{
+		"symbol_ticker", "symbol_raw", "symbol_description", "symbol_name",
+		"symbol_type_code", "symbol_type_desc", "symbol_exchange_code",
+		"symbol_exchange_mic", "symbol_exchange_name", "symbol_exchange_suffix",
+		"symbol_currency_code", "symbol_currency_name", "symbol_figi",
+		"price", "units", "amount", "currency_code", "currency_name",
+		"type", "subtype", "raw_type", "option_type", "description",
+		"option_ticker", "option_side", "option_strike", "option_expiry",
+		"option_is_mini", "option_underlying",
+		"trade_date", "settlement_date", "fee", "fee_asset", "fx_rate",
+		"institution", "provider_type", "source_system", "source_group_id",
+		"needs_review", "is_external",
+	}
+}
+
 // UpsertBatch deduplicates by (account_id, source_record_id). The conflict
 // target maps to the activities_account_source_uk unique index defined on
 // ActivityPO.
@@ -67,17 +98,35 @@ func (r *activityRepo) UpsertBatch(ctx context.Context, accountID string, items 
 	if len(items) == 0 {
 		return nil
 	}
-	pos := make([]ActivityPO, 0, len(items))
+	unique := make(map[string]ActivityPO, len(items))
 	for _, it := range items {
-		pos = append(pos, activityFromDomain(accountID, it))
+		po := activityFromDomain(accountID, it)
+		unique[po.SourceRecordID] = po
 	}
-	err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "account_id"}, {Name: "source_record_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"price", "units", "amount", "type",
-			"trade_date", "settlement_date", "fee", "description",
-		}),
-	}).Create(&pos).Error
+	pos := make([]ActivityPO, 0, len(unique))
+	for _, po := range unique {
+		pos = append(pos, po)
+	}
+	conflict := clause.OnConflict{
+		Columns:   []clause.Column{{Name: "account_id"}, {Name: "source_record_id"}},
+		DoUpdates: clause.AssignmentColumns(activityConflictColumns()),
+	}
+	// One transaction keeps the account's batch atomic (both legs of every
+	// fill land together) while each statement stays under the driver's
+	// parameter limit.
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for start := 0; start < len(pos); start += activityUpsertChunkSize {
+			end := start + activityUpsertChunkSize
+			if end > len(pos) {
+				end = len(pos)
+			}
+			chunk := pos[start:end]
+			if err := tx.Clauses(conflict).Create(&chunk).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("activity upsert: %w", err)
 	}
