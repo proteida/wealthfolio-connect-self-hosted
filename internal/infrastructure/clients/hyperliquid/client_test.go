@@ -42,14 +42,31 @@ var _ = Describe("Hyperliquid Client", func() {
 				User string `json:"user"`
 			}
 			Expect(json.NewDecoder(r.Body).Decode(&body)).To(Succeed())
-			Expect(body.User).To(Equal("0xabc"))
 			switch body.Type {
 			case "spotClearinghouseState":
+				Expect(body.User).To(Equal("0xabc"))
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"balances": []any{
 						map[string]any{"coin": "USDC", "total": "100", "entryNtl": "100"},
 						map[string]any{"coin": "PURR", "total": "10", "entryNtl": "20"},
 						map[string]any{"coin": "ZERO", "total": "0", "entryNtl": "0"},
+					},
+				})
+			case "spotMetaAndAssetCtxs":
+				_ = json.NewEncoder(w).Encode([]any{
+					map[string]any{
+						"tokens": []any{
+							map[string]any{"name": "USDC", "index": 0},
+							map[string]any{"name": "PURR", "index": 1},
+						},
+						"universe": []any{
+							// Market names ("PURR/USDC", "@1") never join
+							// prices; the base token index does.
+							map[string]any{"name": "PURR/USDC", "tokens": []any{1, 0}, "index": 0},
+						},
+					},
+					[]any{
+						map[string]any{"markPx": "3"},
 					},
 				})
 			case "clearinghouseState":
@@ -67,9 +84,80 @@ var _ = Describe("Hyperliquid Client", func() {
 		Expect(snap.Connection.BrokerageSlug).To(Equal("hyperliquid"))
 		// USDC spot ($100) + USDC perp synthetic ($500) → cash 600
 		Expect(snap.Holdings[0].Balances[0].Cash).To(Equal(600.0))
-		// PURR is the only non-stable position; price = 20/10 = 2, value = 20 → above $1 dust
+		// PURR is the only non-stable position; price comes from markPx
+		// (3), not entry notional (20/10 = 2).
+		Expect(snap.Holdings).To(HaveLen(1))
+		Expect(snap.Holdings[0].Partial).To(BeFalse())
 		Expect(snap.Holdings[0].Positions).To(HaveLen(1))
 		Expect(snap.Holdings[0].Positions[0].Symbol.Symbol).To(Equal("PURR"))
+		Expect(snap.Holdings[0].Positions[0].Price).To(Equal(3.0))
+	})
+
+	It("falls back to entry notional and marks partial when meta is missing", func() {
+		srv, hc := newServer(func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Type string `json:"type"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			switch body.Type {
+			case "spotMetaAndAssetCtxs":
+				http.Error(w, "boom", http.StatusInternalServerError)
+			case "clearinghouseState":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"marginSummary": map[string]any{"accountValue": "0"},
+				})
+			default:
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"balances": []any{
+						map[string]any{"coin": "PURR", "total": "10", "entryNtl": "20"},
+					},
+				})
+			}
+		})
+		defer srv.Close()
+
+		snap, err := hyperliquid.New("0xabc", srv.URL, hc).Fetch(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.Holdings[0].Partial).To(BeTrue())
+		Expect(snap.Holdings[0].Positions).To(HaveLen(1))
+		Expect(snap.Holdings[0].Positions[0].Price).To(Equal(2.0))
+	})
+
+	It("keeps zero-entry-notional tokens as unvalued positions", func() {
+		srv, hc := newServer(func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Type string `json:"type"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			switch body.Type {
+			case "spotMetaAndAssetCtxs":
+				_ = json.NewEncoder(w).Encode([]any{
+					map[string]any{
+						"tokens":   []any{},
+						"universe": []any{},
+					},
+					[]any{},
+				})
+			case "clearinghouseState":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"marginSummary": map[string]any{"accountValue": "0"},
+				})
+			default:
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"balances": []any{
+						map[string]any{"coin": "AIRDROP", "total": "5", "entryNtl": "0"},
+					},
+				})
+			}
+		})
+		defer srv.Close()
+
+		snap, err := hyperliquid.New("0xabc", srv.URL, hc).Fetch(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.Holdings[0].Positions).To(HaveLen(1))
+		Expect(snap.Holdings[0].Positions[0].Symbol.Symbol).To(Equal("AIRDROP"))
+		Expect(snap.Holdings[0].Positions[0].Units).To(Equal(5.0))
+		Expect(snap.Holdings[0].Positions[0].Price).To(BeZero())
 	})
 
 	It("still returns spot data when the perp endpoint fails", func() {

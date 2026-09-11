@@ -89,8 +89,10 @@ var _ = Describe("Spot history", func() {
 		Expect(acts[1].Price).To(Equal(0.05))
 		Expect(acts[1].Units).To(Equal(2.0))
 		Expect(acts[1].Amount).To(Equal(0.1))
-		Expect(acts[1].Fee).To(Equal(0.01))
-		Expect(acts[1].FeeAsset).To(Equal("BNB"))
+		// No FeePrice hook: the BNB-denominated fee normalizes to 0 USD
+		// instead of passing through raw.
+		Expect(acts[1].Fee).To(BeZero())
+		Expect(acts[1].FeeAsset).To(Equal("USD"))
 		// Non-USD quotes keep their denomination instead of fabricated USD.
 		Expect(acts[1].Currency.Code).To(Equal("BTC"))
 		Expect(acts[1].NeedsReview).To(BeTrue())

@@ -111,5 +111,8 @@ var _ = Describe("Bitget Client", func() {
 		snap, err := bitget.New("k", "s", "p", srv.URL, hc).Fetch(context.Background())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(snap.Holdings[0].Balances[0].Cash).To(Equal(50.0))
+		// Priceless snapshots are partial: they must never replace the
+		// last complete holdings downstream.
+		Expect(snap.Holdings[0].Partial).To(BeTrue())
 	})
 })
