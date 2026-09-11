@@ -133,6 +133,22 @@ func (r *activityRepo) UpsertBatch(ctx context.Context, accountID string, items 
 	return nil
 }
 
+// Delete removes the named source records within an account. Unknown IDs
+// are a no-op.
+func (r *activityRepo) Delete(ctx context.Context, accountID string, sourceRecordIDs []string) error {
+	if len(sourceRecordIDs) == 0 {
+		return nil
+	}
+	err := r.db.WithContext(ctx).
+		Where("account_id = ?", accountID).
+		Where("source_record_id IN ?", sourceRecordIDs).
+		Delete(&ActivityPO{}).Error
+	if err != nil {
+		return fmt.Errorf("activity delete: %w", err)
+	}
+	return nil
+}
+
 // ─── Holdings ─────────────────────────────────────────────────────────────
 
 type holdingRepo struct{ db *gorm.DB }

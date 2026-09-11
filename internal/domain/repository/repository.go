@@ -50,6 +50,10 @@ type ActivityRepository interface {
 	List(ctx context.Context, f ActivityFilter) ([]brokerage.Activity, int, error)
 	// UpsertBatch deduplicates by source_record_id within an account.
 	UpsertBatch(ctx context.Context, accountID string, items []brokerage.Activity) error
+	// Delete removes the named source records within an account. Used to
+	// retire superseded synthetic rows (e.g. a vault-fallback purchase
+	// replaced by verified history); deleting unknown IDs is a no-op.
+	Delete(ctx context.Context, accountID string, sourceRecordIDs []string) error
 }
 
 // HoldingRepository persists snapshots.

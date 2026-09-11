@@ -50,6 +50,19 @@ var _ = Describe("Config.LoadFrom", func() {
 		})
 	})
 
+	It("parses TON wallets comma-separated while preserving address case", func() {
+		cfg, err := config.LoadFrom(mapLoader(base))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Crypto.TONCenterAPIKey).To(BeEmpty())
+		Expect(cfg.Crypto.TONWallets).To(BeEmpty())
+		base["TONCENTER_API_KEY"] = "key"
+		base["TON_WALLETS"] = " UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA , 0:abc ,"
+		cfg, err = config.LoadFrom(mapLoader(base))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Crypto.TONCenterAPIKey).To(Equal("key"))
+		Expect(cfg.Crypto.TONWallets).To(Equal([]string{"UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0:abc"}))
+	})
+
 	Context("when a required variable is missing", func() {
 		It("fails with an error listing all missing variables", func() {
 			_, err := config.LoadFrom(mapLoader(map[string]string{}))
