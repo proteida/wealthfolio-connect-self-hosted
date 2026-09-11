@@ -59,12 +59,15 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 	if c.wallet == "" {
 		return domainsync.BrokerSnapshot{}, errors.New("hyperliquid: wallet address not configured")
 	}
-	spot, spotErr := c.spot(ctx)
+	spot, spotPartial, spotErr := c.spot(ctx)
 	perp, perpErr := c.perp(ctx)
 	if spotErr != nil && perpErr != nil {
 		return domainsync.BrokerSnapshot{}, fmt.Errorf("hyperliquid: %w", errors.Join(spotErr, perpErr))
 	}
 	snap := cexcommon.Snapshot{}
+	// One failed component means the snapshot is incomplete and must never
+	// replace the last complete holdings.
+	snap.Partial = spotErr != nil || perpErr != nil || spotPartial
 	snap.Balances = append(snap.Balances, spot...)
 	// Perp account collateral is folded into a synthetic USDC cash balance.
 	if perp > 0 {
@@ -80,7 +83,11 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 	return cexcommon.Translate("hyperliquid", "Hyperliquid", snap), nil
 }
 
-func (c *Client) spot(ctx context.Context) ([]cexcommon.Balance, error) {
+func (c *Client) spot(ctx context.Context) (out []cexcommon.Balance, metaFallback bool, err error) {
+	marks, marksErr := c.spotMarks(ctx)
+	if marksErr != nil {
+		metaFallback = true
+	}
 	type assetRow struct {
 		Coin     string `json:"coin"`
 		Total    string `json:"total"`
@@ -96,9 +103,10 @@ func (c *Client) spot(ctx context.Context) ([]cexcommon.Balance, error) {
 			"user": c.wallet,
 		}, &env,
 	); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	out := make([]cexcommon.Balance, 0, len(env.Balances))
+	out = make([]cexcommon.Balance, 0, len(env.Balances))
+	fallback := metaFallback
 	for _, r := range env.Balances {
 		qty := atof(r.Total)
 		if qty == 0 {
@@ -106,12 +114,25 @@ func (c *Client) spot(ctx context.Context) ([]cexcommon.Balance, error) {
 		}
 		ntl := atof(r.EntryNtl)
 		var price, usd float64
-		if cexcommon.IsStablecoin(r.Coin) {
+		switch {
+		case cexcommon.IsStablecoin(r.Coin):
 			price = 1
 			usd = qty
-		} else if qty > 0 && ntl > 0 {
+		case marks[strings.ToUpper(r.Coin)] > 0:
+			// Market valuation from the spot meta context; entry
+			// notional stays out of pricing entirely.
+			price = marks[strings.ToUpper(r.Coin)]
+			usd = price * qty
+		case qty > 0 && ntl > 0:
+			// Meta unavailable for this token: fall back to entry
+			// notional and mark the snapshot partial.
 			price = ntl / qty
 			usd = ntl
+			fallback = true
+		default:
+			// Positive quantity with zero entry notional: kept as an
+			// unvalued position downstream, never dropped.
+			fallback = true
 		}
 		out = append(
 			out, cexcommon.Balance{
@@ -122,7 +143,62 @@ func (c *Client) spot(ctx context.Context) ([]cexcommon.Balance, error) {
 			},
 		)
 	}
-	return out, nil
+	if fallback {
+		return out, true, nil
+	}
+	return out, false, nil
+}
+
+// spotMarks maps spot token names to their current markPx via the
+// spotMetaAndAssetCtxs endpoint. The response is a two-element array
+// [spotMeta, assetCtxs]: universe entries carry market names ("PURR/USDC",
+// "@1") plus base/quote token indices, while assetCtxs aligns with the
+// universe by position. Prices join balance coins through the meta token
+// index, never through market names.
+func (c *Client) spotMarks(ctx context.Context) (map[string]float64, error) {
+	var env []json.RawMessage
+	if err := c.postInfo(ctx, map[string]string{"type": "spotMetaAndAssetCtxs"}, &env); err != nil {
+		return nil, err
+	}
+	if len(env) != 2 {
+		return nil, fmt.Errorf("hyperliquid: spotMetaAndAssetCtxs returned %d elements, want 2", len(env))
+	}
+	var meta struct {
+		Tokens []struct {
+			Name  string `json:"name"`
+			Index int    `json:"index"`
+		} `json:"tokens"`
+		Universe []struct {
+			Tokens []int `json:"tokens"`
+		} `json:"universe"`
+	}
+	if err := json.Unmarshal(env[0], &meta); err != nil {
+		return nil, fmt.Errorf("hyperliquid: spot meta decode: %w", err)
+	}
+	var assetCtxs []struct {
+		MarkPx string `json:"markPx"`
+	}
+	if err := json.Unmarshal(env[1], &assetCtxs); err != nil {
+		return nil, fmt.Errorf("hyperliquid: spot asset contexts decode: %w", err)
+	}
+	names := make(map[int]string, len(meta.Tokens))
+	for _, t := range meta.Tokens {
+		names[t.Index] = t.Name
+	}
+	marks := make(map[string]float64)
+	for i, u := range meta.Universe {
+		if i >= len(assetCtxs) || len(u.Tokens) == 0 {
+			continue
+		}
+		px := atof(assetCtxs[i].MarkPx)
+		if px <= 0 {
+			continue
+		}
+		if name := names[u.Tokens[0]]; name != "" {
+			marks[strings.ToUpper(name)] = px
+		}
+	}
+	return marks, nil
 }
 
 func (c *Client) perp(ctx context.Context) (float64, error) {
