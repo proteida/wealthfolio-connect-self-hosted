@@ -180,10 +180,12 @@ type Activity struct {
 
 // Position is one current holding line.
 type Position struct {
-	Symbol               Symbol
-	Units                float64
-	Price                float64
-	OpenPnL              float64
+	Symbol  Symbol
+	Units   float64
+	Price   float64
+	OpenPnL float64
+	// AveragePurchasePrice is the remaining-position cost basis. Zero means
+	// unknown — never substitute the current market price.
 	AveragePurchasePrice float64
 	Currency             Currency
 	CashEquivalent       bool
@@ -212,4 +214,8 @@ type Holdings struct {
 	Positions       []Position
 	OptionPositions []OptionPosition
 	CapturedAt      time.Time
+	// Partial marks a snapshot with a failed upstream component (prices,
+	// positions, one of several account legs). Partial snapshots must never
+	// replace the last complete one; unknown value is not zero value.
+	Partial bool
 }
