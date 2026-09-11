@@ -139,6 +139,23 @@ var _ = Describe("ActivityRepository", func() {
 		Expect(mock.ExpectationsWereMet()).To(Succeed())
 	})
 
+	It("deletes named source records within an account", func() {
+		mock.ExpectExec(rx(`DELETE FROM "activities"`)).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		Expect(repo.Delete(ctx, "acc", []string{"vault:0:X", "old"})).To(Succeed())
+		Expect(mock.ExpectationsWereMet()).To(Succeed())
+	})
+
+	It("is a no-op when no IDs are given", func() {
+		Expect(repo.Delete(ctx, "acc", nil)).To(Succeed())
+		Expect(mock.ExpectationsWereMet()).To(Succeed())
+	})
+
+	It("propagates delete errors", func() {
+		mock.ExpectExec(rx(`DELETE FROM "activities"`)).WillReturnError(errors.New("db"))
+		Expect(repo.Delete(ctx, "acc", []string{"x"})).To(MatchError(ContainSubstring("db")))
+	})
+
 	It("splits oversized batches so statements stay under the parameter limit", func() {
 		items := make([]brokerage.Activity, 0, 2500)
 		for i := 0; i < 2500; i++ {

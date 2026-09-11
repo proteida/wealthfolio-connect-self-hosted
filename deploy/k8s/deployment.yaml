@@ -39,6 +39,10 @@ stringData:
   BITGET_PASSPHRASE: "CHANGE_ME"
   # ---- Hyperliquid (read-only wallet) ----
   HYPERLIQUID_WALLET: "0xCHANGE_ME"
+  # ---- TON Center API v3 (native TON + Jetton balances and history) ----
+  TONCENTER_API_KEY: "CHANGE_ME"
+  # Comma-separated TON addresses, e.g. "UQAbc...,0:def...".
+  TON_WALLETS: "CHANGE_ME"
 ---
 apiVersion: v1
 kind: ConfigMap
