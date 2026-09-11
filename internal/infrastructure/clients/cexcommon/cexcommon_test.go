@@ -141,6 +141,29 @@ var _ = Describe("Translate", func() {
 		Expect(string(acts[1].Type)).To(Equal("BUY"))
 	})
 
+	It("splits dashed pairs on the separator for any quote asset", func() {
+		snap := cexcommon.Translate("test", "Test", cexcommon.Snapshot{
+			Trades: []cexcommon.Trade{
+				{ID: "x1", Symbol: "XRP-DOT", Side: "buy", Price: 0.5, Quantity: 100, Timestamp: time.Now()},
+			},
+		})
+		acts := snap.Activities["test-spot"]
+		Expect(acts).To(HaveLen(2))
+		Expect(acts[0].Symbol.Symbol).To(Equal("DOT"))
+		Expect(string(acts[0].Type)).To(Equal("SELL"))
+		Expect(acts[1].Symbol.Symbol).To(Equal("XRP"))
+		Expect(string(acts[1].Type)).To(Equal("BUY"))
+	})
+
+	It("skips concatenated pairs with unlisted quote assets", func() {
+		snap := cexcommon.Translate("test", "Test", cexcommon.Snapshot{
+			Trades: []cexcommon.Trade{
+				{ID: "x1", Symbol: "XRPDOT", Side: "buy", Price: 0.5, Quantity: 100, Timestamp: time.Now()},
+			},
+		})
+		Expect(snap.Activities["test-spot"]).To(BeEmpty())
+	})
+
 	It("marks an empty successful trade query as synced", func() {
 		snap := cexcommon.Translate("test", "Test", cexcommon.Snapshot{ActivitiesFetched: true})
 		Expect(snap.Activities).To(BeEmpty())

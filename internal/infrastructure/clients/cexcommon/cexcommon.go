@@ -266,11 +266,20 @@ func unvaluedPosition(slug, displayName, asset string, qty float64) brokerage.Po
 	}
 }
 
+// splitPair resolves a trade pair into (base, quote). An explicit "-"
+// separator is authoritative ("XRP-DOT" splits to XRP/DOT for any assets);
+// separator-less symbols fall back to matching a known quote suffix, which
+// only covers listed quote assets — anything else yields ("", "") and the
+// caller must skip the trade.
 func splitPair(pair string) (string, string) {
-	pair = strings.ToUpper(strings.ReplaceAll(pair, "-", ""))
+	pair = strings.ToUpper(strings.TrimSpace(pair))
+	if parts := strings.Split(pair, "-"); len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+		return parts[0], parts[1]
+	}
+	concatenated := strings.ReplaceAll(pair, "-", "")
 	for _, quote := range []string{"USD₮0", "USDT", "USDC", "BUSD", "USDS", "USD", "BTC", "ETH", "BNB", "SOL"} {
-		if strings.HasSuffix(pair, quote) && len(pair) > len(quote) {
-			return strings.TrimSuffix(pair, quote), quote
+		if strings.HasSuffix(concatenated, quote) && len(concatenated) > len(quote) {
+			return strings.TrimSuffix(concatenated, quote), quote
 		}
 	}
 	return "", ""
