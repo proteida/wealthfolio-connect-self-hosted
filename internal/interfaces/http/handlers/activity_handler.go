@@ -183,6 +183,13 @@ func toActivityDTO(a brokerage.Activity) activityDTO {
 		s := a.SourceGroupID
 		dto.SourceGroupID = &s
 	}
+	// Transfers always carry an explicit performance-boundary flag so the
+	// app can validate internal pairs (tracked counterparty) instead of
+	// leaving them unpaired, and treat untracked counterparties as
+	// external. Other activity types omit it.
+	if a.Type == brokerage.ActivityTransferIn || a.Type == brokerage.ActivityTransferOut {
+		dto.MappingMetadata = map[string]any{"flow": map[string]any{"is_external": a.IsExternal}}
+	}
 	return dto
 }
 
