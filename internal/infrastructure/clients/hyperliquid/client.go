@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	appprices "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/prices"
 	domainsync "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/sync"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/cexcommon"
 )
@@ -38,7 +39,13 @@ type Client struct {
 	wallet  string
 	baseURL string
 	http    HTTPDoer
+	// prices is the optional short-lived cache for spot marks. Nil
+	// preserves the original fetch-every-sync behavior.
+	prices *appprices.Service
 }
+
+// SetPriceService attaches the price cache. Call during construction.
+func (c *Client) SetPriceService(svc *appprices.Service) { c.prices = svc }
 
 // New builds a client targeting the supplied wallet address.
 func New(wallet, baseURL string, h HTTPDoer) *Client {
@@ -155,7 +162,34 @@ func (c *Client) spot(ctx context.Context) (out []cexcommon.Balance, metaFallbac
 // "@1") plus base/quote token indices, while assetCtxs aligns with the
 // universe by position. Prices join balance coins through the meta token
 // index, never through market names.
+// spotMarks returns current spot marks, serving the cached map when the
+// price service holds one and fetching otherwise.
 func (c *Client) spotMarks(ctx context.Context) (map[string]float64, error) {
+	if c.prices == nil {
+		return c.fetchSpotMarks(ctx)
+	}
+	raw, err := c.prices.GetBlob(ctx, spotMarksKey, appprices.CurrentPriceTTL, func(ctx context.Context) ([]byte, error) {
+		marks, err := c.fetchSpotMarks(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(marks)
+	})
+	if err != nil {
+		return nil, err
+	}
+	var marks map[string]float64
+	if err := json.Unmarshal(raw, &marks); err != nil {
+		return nil, fmt.Errorf("hyperliquid: cached marks decode: %w", err)
+	}
+	return marks, nil
+}
+
+// spotMarksKey is the cache key for the whole spot mark map: marks are a
+// single provider response, so they share one TTL.
+const spotMarksKey = "hl:spot:marks:v1"
+
+func (c *Client) fetchSpotMarks(ctx context.Context) (map[string]float64, error) {
 	var env []json.RawMessage
 	if err := c.postInfo(ctx, map[string]string{"type": "spotMetaAndAssetCtxs"}, &env); err != nil {
 		return nil, err

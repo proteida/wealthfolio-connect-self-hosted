@@ -92,6 +92,10 @@ type Client struct {
 	// deletion in SnapshotCommitted, after the replacement activities they
 	// yield to are persisted.
 	retireVaults map[string][]string
+	// priceHistory is the optional durable L2 for market-price windows
+	// (checked before TonAPI/CoinGecko, UPSERTed after a fetch). Nil
+	// preserves the original memory-only pricing.
+	priceHistory repository.PriceHistoryRepository
 }
 
 // tailScope is the cursor-store scope prefix for per-wallet tail backfills.
@@ -103,6 +107,14 @@ func (c *Client) ConfigureCursors(cursors repository.CursorRepository) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cursors = cursors
+}
+
+// SetPriceHistory attaches the durable market-price store. Call during
+// construction, before starting synchronization.
+func (c *Client) SetPriceHistory(history repository.PriceHistoryRepository) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.priceHistory = history
 }
 
 // SnapshotCommitted persists tentative tail progress after the snapshot it
@@ -401,7 +413,11 @@ func (c *Client) valueOrPricer() valueUSD {
 // Pricing fails fast (3 attempts, short backoff) so a throttled feed
 // degrades to unvalued legs instead of stalling the sync.
 func pricerFor(c *Client) *pricer {
-	return newPricer("", "", c.http, c.sleep, 500*time.Millisecond, 3)
+	p := newPricer("", "", c.http, c.sleep, 500*time.Millisecond, 3)
+	c.mu.Lock()
+	p.history = c.priceHistory
+	c.mu.Unlock()
+	return p
 }
 
 // fetchBalances pulls the native state and Jetton balances with metadata.

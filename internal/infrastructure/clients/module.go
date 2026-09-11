@@ -11,6 +11,7 @@ import (
 	"github.com/rs/zerolog"
 	"go.uber.org/fx"
 
+	appprices "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/prices"
 	appsync "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/sync"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/repository"
 	domainsync "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/sync"
@@ -108,16 +109,23 @@ func NewBitget(cfg *config.Config) *bitget.Client {
 }
 
 // NewHyperliquid builds the Hyperliquid BrokerClient.
-func NewHyperliquid(cfg *config.Config) *hyperliquid.Client {
-	return hyperliquid.New(cfg.Crypto.HyperliquidWallet, "", nil)
+func NewHyperliquid(cfg *config.Config, prices *appprices.Service) *hyperliquid.Client {
+	c := hyperliquid.New(cfg.Crypto.HyperliquidWallet, "", nil)
+	if prices != nil {
+		c.SetPriceService(prices)
+	}
+	return c
 }
 
 // NewTON builds the TON Center BrokerClient tracking the configured wallets.
-func NewTON(cfg *config.Config, log zerolog.Logger, cursors repository.CursorRepository, history repository.ActivityRepository) *ton.Client {
+func NewTON(cfg *config.Config, log zerolog.Logger, cursors repository.CursorRepository, history repository.ActivityRepository, priceHistory repository.PriceHistoryRepository) *ton.Client {
 	c := ton.New(cfg.Crypto.TONCenterAPIKey, cfg.Crypto.TONWallets, "", nil)
 	c.SetLogger(log.With().Str("client", "ton").Logger())
 	c.ConfigureCursors(cursors)
 	c.ConfigureHistory(history)
+	if priceHistory != nil {
+		c.SetPriceHistory(priceHistory)
+	}
 	return c
 }
 
@@ -129,7 +137,7 @@ type CryptoClients struct {
 
 // NewCryptoClients registers only integrations whose required settings exist.
 // Partial credentials produce one startup warning, never recurring API calls.
-func NewCryptoClients(cfg *config.Config, log zerolog.Logger, history repository.ActivityRepository, cursors repository.CursorRepository) CryptoClients {
+func NewCryptoClients(cfg *config.Config, log zerolog.Logger, history repository.ActivityRepository, cursors repository.CursorRepository, priceHistory repository.PriceHistoryRepository, prices *appprices.Service) CryptoClients {
 	out := CryptoClients{}
 	enabled := func(name string, fields ...string) bool {
 		count := 0
@@ -156,7 +164,7 @@ func NewCryptoClients(cfg *config.Config, log zerolog.Logger, history repository
 		out.Clients = append(out.Clients, NewBitget(cfg))
 	}
 	if enabled("hyperliquid", cfg.Crypto.HyperliquidWallet) {
-		out.Clients = append(out.Clients, NewHyperliquid(cfg))
+		out.Clients = append(out.Clients, NewHyperliquid(cfg, prices))
 	}
 	if len(cfg.DefiWallets) > 0 && enabled("okx_web3", cfg.Crypto.OKXWeb3APIKey, cfg.Crypto.OKXWeb3Secret, cfg.Crypto.OKXWeb3Passphrase) {
 		out.Clients = append(out.Clients, NewOKXWeb3(cfg, log))
@@ -165,7 +173,7 @@ func NewCryptoClients(cfg *config.Config, log zerolog.Logger, history repository
 		if strings.TrimSpace(cfg.Crypto.TONCenterAPIKey) == "" {
 			log.Warn().Msg("ton enabled without TONCENTER_API_KEY: 1 RPS anonymous quota applies")
 		}
-		out.Clients = append(out.Clients, NewTON(cfg, log, cursors, history))
+		out.Clients = append(out.Clients, NewTON(cfg, log, cursors, history, priceHistory))
 	}
 	return out
 }

@@ -10,7 +10,12 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/alicebob/miniredis/v2"
+
+	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/prices"
+	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/cache"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/hyperliquid"
+	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/config"
 )
 
 func TestHyperliquid(t *testing.T) {
@@ -191,5 +196,86 @@ var _ = Describe("Hyperliquid Client", func() {
 
 		_, err := hyperliquid.New("0xabc", srv.URL, hc).Fetch(context.Background())
 		Expect(err).To(HaveOccurred())
+	})
+})
+
+var _ = Describe("Hyperliquid marks cache", func() {
+	It("serves spot marks from the cache without refetching", func() {
+		var metaCalls int
+		srv, hc := newServer(func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Type string `json:"type"`
+			}
+			Expect(json.NewDecoder(r.Body).Decode(&body)).To(Succeed())
+			switch body.Type {
+			case "spotClearinghouseState":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"balances": []any{
+						map[string]any{"coin": "PURR", "total": "10", "entryNtl": "20"},
+					},
+				})
+			case "spotMetaAndAssetCtxs":
+				metaCalls++
+				_ = json.NewEncoder(w).Encode([]any{
+					map[string]any{
+						"tokens": []any{
+							map[string]any{"name": "PURR", "index": 1},
+						},
+						"universe": []any{
+							map[string]any{"name": "PURR/USDC", "tokens": []any{1, 0}, "index": 0},
+						},
+					},
+					[]any{
+						map[string]any{"markPx": "3"},
+					},
+				})
+			case "clearinghouseState":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"marginSummary": map[string]any{"accountValue": "0"},
+				})
+			default:
+				http.NotFound(w, r)
+			}
+		})
+		defer srv.Close()
+
+		msrv, err := miniredis.Run()
+		Expect(err).NotTo(HaveOccurred())
+		defer msrv.Close()
+
+		svc := prices.NewService(nil, cache.NewCurrentPriceCache(&config.Config{RedisAddr: msrv.Addr()}))
+		c := hyperliquid.New("0xabc", srv.URL, hc)
+		c.SetPriceService(svc)
+
+		snap, err := c.Fetch(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.Holdings[0].Positions[0].Price).To(Equal(3.0))
+		Expect(metaCalls).To(Equal(1))
+
+		// Second sync reuses the cached marks: no meta request.
+		snap, err = c.Fetch(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.Holdings[0].Positions[0].Price).To(Equal(3.0))
+		Expect(metaCalls).To(Equal(1))
+	})
+
+	It("fetches every sync without a price service", func() {
+		var metaCalls int
+		srv, hc := newServer(func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Type string `json:"type"`
+			}
+			Expect(json.NewDecoder(r.Body).Decode(&body)).To(Succeed())
+			if body.Type == "spotMetaAndAssetCtxs" {
+				metaCalls++
+			}
+			http.NotFound(w, r)
+		})
+		defer srv.Close()
+
+		c := hyperliquid.New("0xabc", srv.URL, hc)
+		_, _ = c.Fetch(context.Background())
+		_, _ = c.Fetch(context.Background())
+		Expect(metaCalls).To(Equal(2))
 	})
 })

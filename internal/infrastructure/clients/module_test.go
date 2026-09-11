@@ -10,6 +10,7 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/mock/gomock"
 
+	appprices "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/prices"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/repository"
 	repomocks "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/repository/mocks"
 	domainsync "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/sync"
@@ -67,13 +68,13 @@ var _ = Describe("Client constructors", func() {
 		Expect(clients.NewBitget(cfg).ID()).To(Equal("bitget"))
 	})
 	It("Hyperliquid client returns slug hyperliquid", func() {
-		Expect(clients.NewHyperliquid(cfg).ID()).To(Equal("hyperliquid"))
+		Expect(clients.NewHyperliquid(cfg, nil).ID()).To(Equal("hyperliquid"))
 	})
 	It("OKX Web3 client returns slug okx_web3", func() {
 		Expect(clients.NewOKXWeb3(cfg, zerolog.Nop()).ID()).To(Equal("okx_web3"))
 	})
 	It("TON client returns slug ton", func() {
-		Expect(clients.NewTON(cfg, zerolog.Nop(), nil, nil).ID()).To(Equal("ton"))
+		Expect(clients.NewTON(cfg, zerolog.Nop(), nil, nil, nil).ID()).To(Equal("ton"))
 	})
 	It("Module is non-nil", func() {
 		Expect(clients.Module).NotTo(BeNil())
@@ -89,7 +90,7 @@ var _ = Describe("Configured crypto registration", func() {
 		return ids
 	}
 	It("disables all unconfigured crypto integrations", func() {
-		Expect(clients.NewCryptoClients(&config.Config{}, zerolog.Nop(), nil, nil).Clients).To(BeEmpty())
+		Expect(clients.NewCryptoClients(&config.Config{}, zerolog.Nop(), nil, nil, nil, nil).Clients).To(BeEmpty())
 	})
 	It("registers Binance and Web3 independently of empty OKX CEX and Bitget credentials", func() {
 		cfg := sampleCfg()
@@ -100,7 +101,7 @@ var _ = Describe("Configured crypto registration", func() {
 		cfg.Crypto.BitgetSecret = ""
 		cfg.Crypto.BitgetPassphrase = ""
 		cfg.Crypto.HyperliquidWallet = ""
-		out := clients.NewCryptoClients(cfg, zerolog.Nop(), nil, nil)
+		out := clients.NewCryptoClients(cfg, zerolog.Nop(), nil, nil, nil, nil)
 		ids := []string{}
 		for _, c := range out.Clients {
 			ids = append(ids, c.ID())
@@ -110,30 +111,31 @@ var _ = Describe("Configured crypto registration", func() {
 	It("warns once at construction for partial credentials and excludes that client", func() {
 		var logs bytes.Buffer
 		cfg := &config.Config{Crypto: config.CryptoConfig{OKXAPIKey: "k", BitgetAPIKey: "k"}}
-		Expect(clients.NewCryptoClients(cfg, zerolog.New(&logs), nil, nil).Clients).To(BeEmpty())
+		Expect(clients.NewCryptoClients(cfg, zerolog.New(&logs), nil, nil, nil, nil).Clients).To(BeEmpty())
 		Expect(logs.String()).To(ContainSubstring("integration disabled: incomplete configuration"))
 	})
 	It("registers TON only when wallets are configured", func() {
 		cfg := sampleCfg()
-		Expect(clientIDs(clients.NewCryptoClients(cfg, zerolog.Nop(), nil, nil))).NotTo(ContainElement("ton"))
+		Expect(clientIDs(clients.NewCryptoClients(cfg, zerolog.Nop(), nil, nil, nil, nil))).NotTo(ContainElement("ton"))
 		cfg.Crypto.TONWallets = []string{"UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
-		Expect(clientIDs(clients.NewCryptoClients(cfg, zerolog.Nop(), nil, nil))).To(ContainElement("ton"))
+		Expect(clientIDs(clients.NewCryptoClients(cfg, zerolog.Nop(), nil, nil, nil, nil))).To(ContainElement("ton"))
 	})
 	It("warns when TON wallets lack an API key but still registers", func() {
 		var logs bytes.Buffer
 		cfg := sampleCfg()
 		cfg.Crypto.TONWallets = []string{"UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
-		Expect(clientIDs(clients.NewCryptoClients(cfg, zerolog.New(&logs), nil, nil))).To(ContainElement("ton"))
+		Expect(clientIDs(clients.NewCryptoClients(cfg, zerolog.New(&logs), nil, nil, nil, nil))).To(ContainElement("ton"))
 		Expect(logs.String()).To(ContainSubstring("1 RPS anonymous quota"))
 		cfg.Crypto.TONCenterAPIKey = "key"
 		logs.Reset()
-		Expect(clientIDs(clients.NewCryptoClients(cfg, zerolog.New(&logs), nil, nil))).To(ContainElement("ton"))
+		Expect(clientIDs(clients.NewCryptoClients(cfg, zerolog.New(&logs), nil, nil, nil, nil))).To(ContainElement("ton"))
 		Expect(logs.String()).NotTo(ContainSubstring("1 RPS anonymous quota"))
 	})
 	It("flattens configured clients into the existing fx group", func() {
 		cfg := sampleCfg()
 		repo := repomocks.NewMockActivityRepository(gomock.NewController(GinkgoT()))
 		cursors := repomocks.NewMockCursorRepository(gomock.NewController(GinkgoT()))
+		priceHistory := repomocks.NewMockPriceHistoryRepository(gomock.NewController(GinkgoT()))
 		type inputs struct {
 			fx.In
 			Clients []domainsync.BrokerClient `group:"broker_clients"`
@@ -142,6 +144,8 @@ var _ = Describe("Configured crypto registration", func() {
 		app := fx.New(fx.NopLogger, fx.Supply(cfg, zerolog.Nop()),
 			fx.Provide(func() repository.ActivityRepository { return repo }),
 			fx.Provide(func() repository.CursorRepository { return cursors }),
+			fx.Provide(func() repository.PriceHistoryRepository { return priceHistory }),
+			fx.Provide(func() *appprices.Service { return appprices.NewService(priceHistory, nil) }),
 			clients.Module, fx.Invoke(func(in inputs) {
 				for _, c := range in.Clients {
 					ids = append(ids, c.ID())

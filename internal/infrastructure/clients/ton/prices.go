@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/repository"
 )
 
 // This file values swap legs through USD. Stablecoins convert 1:1; market
@@ -74,6 +76,10 @@ type pricer struct {
 	tonFailed   map[string]error
 	geckoCache  map[string][]pricePoint
 	geckoFailed map[string]error
+	// history is the optional durable L2 behind the in-memory windows:
+	// checked before any external call, UPSERTed after a fetch. Nil
+	// preserves the original memory-only behavior.
+	history repository.PriceHistoryRepository
 }
 
 // newPricer builds a pricer sharing the client's transport tuning.
@@ -183,7 +189,22 @@ func (p *pricer) chartPoints(ctx context.Context, id string) ([]pricePoint, erro
 		return points, nil
 	}
 	now := time.Now().Unix()
-	points, err := p.fetchChart(ctx, id, now-tonAPIHistoryDays*daySeconds, now)
+	from := now - tonAPIHistoryDays*daySeconds
+	if stored, err := p.storedWindow(ctx, id, "tonapi", from, now); err == nil && len(stored) > 0 {
+		// The live endpoint serves newest-first and tonAPIPrice selects
+		// on that order; the store returns oldest-first, so reverse.
+		for i, j := 0, len(stored)-1; i < j; i, j = i+1, j-1 {
+			stored[i], stored[j] = stored[j], stored[i]
+		}
+		p.mu.Lock()
+		p.tonPoints[id] = stored
+		p.mu.Unlock()
+		return stored, nil
+	}
+	points, err := p.fetchChart(ctx, id, from, now)
+	if err == nil {
+		p.rememberWindow(ctx, id, "tonapi", points)
+	}
 	p.mu.Lock()
 	if err != nil {
 		p.tonFailed[id] = err
@@ -315,7 +336,16 @@ func (p *pricer) dayPoints(ctx context.Context, id string, at int64) ([]pricePoi
 	if ok {
 		return points, nil
 	}
+	if stored, err := p.storedWindow(ctx, id, "coingecko", day, day+daySeconds); err == nil && len(stored) > 0 {
+		p.mu.Lock()
+		p.geckoCache[key] = stored
+		p.mu.Unlock()
+		return stored, nil
+	}
 	points, err := p.fetchRange(ctx, id, day, day+daySeconds)
+	if err == nil {
+		p.rememberWindow(ctx, id, "coingecko", points)
+	}
 	p.mu.Lock()
 	if err != nil {
 		p.geckoFailed[key] = err
@@ -324,6 +354,45 @@ func (p *pricer) dayPoints(ctx context.Context, id string, at int64) ([]pricePoi
 	}
 	p.mu.Unlock()
 	return points, err
+}
+
+// storedWindow reads a durable window for selection, or nil when the store
+// is unwired, unreadable or empty (callers fall through to a fetch).
+func (p *pricer) storedWindow(ctx context.Context, id, source string, from, to int64) ([]pricePoint, error) {
+	if p.history == nil {
+		return nil, nil
+	}
+	rows, err := p.history.List(ctx, id, "USD",
+		time.Unix(from, 0).UTC(), time.Unix(to, 0).UTC())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]pricePoint, 0, len(rows))
+	for _, r := range rows {
+		if r.Price > 0 {
+			out = append(out, pricePoint{time: r.Timestamp.Unix(), price: r.Price})
+		}
+	}
+	return out, nil
+}
+
+// rememberWindow UPSERTs a fetched window for future syncs. Storage errors
+// are ignored: the in-memory copy already serves this process.
+func (p *pricer) rememberWindow(ctx context.Context, id, source string, points []pricePoint) {
+	if p.history == nil || len(points) == 0 {
+		return
+	}
+	rows := make([]repository.HistoricalPrice, 0, len(points))
+	for _, point := range points {
+		if point.price <= 0 {
+			continue
+		}
+		rows = append(rows, repository.HistoricalPrice{
+			Asset: id, Timestamp: time.Unix(point.time, 0).UTC(),
+			Currency: "USD", Price: point.price, Source: source,
+		})
+	}
+	_ = p.history.Upsert(ctx, rows)
 }
 
 // fetchRange pulls hourly quotes for [from, to] with retry on rate limits.
