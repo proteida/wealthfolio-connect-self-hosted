@@ -12,6 +12,21 @@ import (
 
 const chainDiscoveryTTL = 15 * time.Minute
 
+// unsupportedWalletChains lists OKX chainIndex values (as decimal strings)
+// that this client deliberately skips. All three are non-EVM chains whose
+// account and transaction models the EVM-centric parsing below cannot
+// handle: canonicalAddress assumes 0x hex, and party/counterparty matching
+// assumes EVM transfer semantics.
+//
+//   - "0": Bitcoin (UTXO model, base58/bech32 addresses). Note "0" is a
+//     genuine chain index here, not a zero value.
+//   - "501": Solana (base58 ed25519 addresses, non-EVM transaction shape).
+//   - "607": TON (raw/friendly address forms, actor-based accounts; see
+//     also isTONWallet, which guards the EVM-only balances endpoint).
+//
+// Enforced in two places: resolveChains drops them during discovery, and
+// hasUnsupportedChain gates history fetching. Add an entry (never remove
+// silently) when OKX lists a new non-EVM chain the client cannot parse.
 var unsupportedWalletChains = map[string]bool{
 	"0":   true, // Bitcoin
 	"501": true, // Solana
