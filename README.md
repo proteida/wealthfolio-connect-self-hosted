@@ -182,6 +182,7 @@ step, the OS-keyring dance only applies to the Tauri desktop build.
 | `STATIC_TOKEN_MODE`     | `false`                   | If `true`, always returns the same JWT.                                                      |
 | `TOKEN_TTL_SECONDS`     | `3600`                    | Access token lifetime.                                                                       |
 | `STATIC_OTP`            | —                         | Optional fixed OTP code accepted by `/auth/v1/verify` in addition to any 6-digit numeric code. |
+| `REDIS_ADDR`            | —                         | Optional `host:port` for short-lived market data (latest prices ~1h TTL, today's candles). Empty disables Redis; durable price history always uses Postgres. |
 
 Every broker integration is **opt-in** — leave its credentials empty and the
 corresponding client is silently skipped at startup. You only need to supply
@@ -351,7 +352,6 @@ token at all. Everything stays marked for review.
 | ------------------ | --------------------------------------------------------------------------------------------------------------- |
 | `TONCENTER_API_KEY` | TON Center API key, sent as `X-API-Key` (server-side only). Empty falls back to the 1 RPS anonymous quota. |
 | `TON_WALLETS`       | Comma-separated TON addresses in any form (e.g. `UQ…` or `0:…`). Case is preserved — TON addresses are case-sensitive. |
-| `REDIS_ADDR`        | Optional `host:port` for short-lived market data (latest prices ~1h TTL, today's candles). Empty disables Redis; durable price history always uses Postgres. |
 
 ---
 

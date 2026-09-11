@@ -58,6 +58,10 @@ services:
       TOKEN_TTL_SECONDS: ${TOKEN_TTL_SECONDS:-3600}
       SYNC_INTERVAL_MINUTES: ${SYNC_INTERVAL_MINUTES:-240}
 
+      # Redis (optional short-lived market data: latest prices, today's candles)
+      # Empty keeps Redis caching disabled; durable history always uses Postgres.
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+
       # Futu OpenD
       FUTU_HOST: ${FUTU_HOST:-}
       FUTU_PORT: ${FUTU_PORT:-11111}
@@ -97,10 +101,6 @@ services:
       # TON Center API v3 (native TON + Jetton balances and history)
       TONCENTER_API_KEY: ${TONCENTER_API_KEY:-}
       TON_WALLETS: ${TON_WALLETS:-}
-
-      # Redis (optional short-lived market data: latest prices, today's candles)
-      # Empty keeps Redis caching disabled; durable history always uses Postgres.
-      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
 
 volumes:
   wealthfolio_connect_postgres:
