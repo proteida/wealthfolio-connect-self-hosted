@@ -133,11 +133,12 @@ func NewTON(cfg *config.Config, log zerolog.Logger, cursors repository.CursorRep
 // NewSteam builds the Steam CS2 inventory BrokerClient.
 func NewSteam(cfg *config.Config, log zerolog.Logger, history repository.ActivityRepository, cursors repository.CursorRepository, prices *appprices.Service, store repository.SteamAssetRepository) *steam.Client {
 	c := steam.New(steam.ClientConfig{
-		SteamID:  cfg.Steam.SteamID,
-		APIKey:   cfg.Steam.APIKey,
-		Session:  cfg.Steam.Session,
-		PriceTTL: cfg.Steam.PriceTTL,
-		Currency: cfg.Steam.Currency,
+		SteamID:      cfg.Steam.SteamID,
+		APIKey:       cfg.Steam.APIKey,
+		Session:      cfg.Steam.Session,
+		RefreshToken: cfg.Steam.RefreshToken,
+		PriceTTL:     cfg.Steam.PriceTTL,
+		Currency:     cfg.Steam.Currency,
 	}, nil)
 	c.SetLogger(log.With().Str("client", "steam").Logger())
 	c.ConfigureHistory(history)

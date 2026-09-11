@@ -287,6 +287,9 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 	now := time.Now().UTC()
 	accountID := steamAccountID(c.cfg.SteamID)
 
+	if err := c.ensureAuth(ctx); err != nil {
+		return domainsync.BrokerSnapshot{}, err
+	}
 	items, complete, err := c.fetchInventory(ctx)
 	if err != nil && len(items) == 0 {
 		return domainsync.BrokerSnapshot{}, err

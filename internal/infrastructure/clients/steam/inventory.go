@@ -227,7 +227,8 @@ func (c *Client) getOnce(ctx context.Context, rawURL string, community bool, int
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "wealthfolio-connect/1.0")
-	if community && c.cfg.Session != "" {
+	if c.auth == nil && community && c.cfg.Session != "" {
+		// Static session only: refresh-token mode owns cookies via its jar.
 		req.Header.Set("Cookie", c.cfg.Session)
 	}
 	resp, err := c.http.Do(req)

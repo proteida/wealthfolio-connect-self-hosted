@@ -365,8 +365,33 @@ key stay in the environment only — never logged, persisted or committed.
 | `STEAM_ID`                | —       | steamid64 to track. Empty disables the integration.                                         |
 | `STEAM_API_KEY`           | —       | Steam Web API key (trade history only).                                                     |
 | `STEAM_SESSION`           | —       | Raw `Cookie` header for private inventory/market history. Empty limits to public endpoints. |
+| `STEAM_REFRESH_TOKEN`     | —       | WebBrowser refresh token from `tools/steam-auth` (preferred over `STEAM_SESSION`).          |
 | `STEAM_PRICE_TTL_MINUTES` | `20`    | Current market-price cache TTL.                                                             |
 | `STEAM_CURRENCY`          | `1`     | Steam wallet currency code for market prices (`1` = USD).                                   |
+
+### Steam authentication
+
+One-time bootstrap with the Node CLI (Go never needs Node at runtime):
+
+```bash
+cd tools/steam-auth
+npm install
+npm run steam-auth
+```
+
+Then configure:
+
+```env
+STEAM_ID=76561198000000000
+STEAM_REFRESH_TOKEN=<refresh token from the CLI>
+```
+
+Normal operation: the Go service derives fresh Steam web cookies
+(`steamLoginSecure`/`sessionid`) from the refresh token automatically —
+one refresh shared across goroutines, one retry per request, cookies cached
+in memory. If the refresh token is rejected (`ErrSteamReauthenticationRequired`),
+run `npm run steam-auth` again and replace the configured token. A rotated
+refresh token is reported (never logged or persisted) when Steam issues one.
 
 ---
 

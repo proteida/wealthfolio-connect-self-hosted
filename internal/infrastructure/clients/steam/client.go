@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -34,9 +35,15 @@ type HTTPDoer interface {
 // ClientConfig tunes the Steam client. Zero values select defaults;
 // endpoint URLs are fields (not constants) so tests and mirrors work.
 type ClientConfig struct {
-	SteamID       string
-	APIKey        string
-	Session       string
+	SteamID string
+	APIKey  string
+	// Session is a static community Cookie header, kept as a fallback when
+	// no refresh token is configured.
+	Session string
+	// RefreshToken is the WebBrowser refresh token minted by the one-time
+	// Node CLI. When set, web cookies derive automatically and the static
+	// session is not used.
+	RefreshToken  string
 	CommunityBase string // https://steamcommunity.com
 	StoreBase     string // https://api.steampowered.com
 	// MinInterval floors spacing between community requests. It is a
@@ -76,6 +83,9 @@ type Client struct {
 	history repository.ActivityRepository
 	cursors repository.CursorRepository
 	prices  *appprices.Service
+	// auth derives web cookies from the refresh token. Non-nil means the
+	// static session Cookie header stays off (the jar owns cookies).
+	auth *SteamAuthClient
 	// store is the optional Steam inventory store (snapshots, provenance,
 	// lots). Nil skips steam-specific persistence; the generic sync still
 	// persists holdings and activities.
@@ -138,6 +148,24 @@ func (c *Client) ConfigureCursors(cursors repository.CursorRepository) {
 
 // SetSteamStore attaches Steam inventory persistence. Nil disables it.
 func (c *Client) SetSteamStore(store repository.SteamAssetRepository) { c.store = store }
+
+// ensureAuth builds the refresh-token authenticator on first use and swaps
+// the transport for the cookie-jar one. Static sessions keep working when
+// no refresh token is configured.
+func (c *Client) ensureAuth(ctx context.Context) error {
+	if strings.TrimSpace(c.cfg.RefreshToken) == "" || c.auth != nil {
+		return nil
+	}
+	auth := NewSteamAuthClient(c.cfg.SteamID, c.cfg.RefreshToken, c.http, "")
+	auth.SetLogger(c.log)
+	authed, err := auth.AuthenticatedClient(ctx)
+	if err != nil {
+		return err
+	}
+	c.auth = auth
+	c.http = authed
+	return nil
+}
 
 // SnapshotCommitted persists tentative progress after the snapshot it
 // covers is stored; failed persistence replays instead of skipping.

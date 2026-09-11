@@ -45,3 +45,12 @@ mocks/
 
 # Logs
 *.log
+
+# Steam auth bootstrap output: password-equivalent refresh tokens.
+# Never commit these files.
+steam-auth.json
+*.steam-auth.json
+tools/steam-auth/*.json
+!tools/steam-auth/package.json
+!tools/steam-auth/package-lock.json
+!tools/steam-auth/tsconfig.json

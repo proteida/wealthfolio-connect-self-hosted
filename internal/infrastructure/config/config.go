@@ -148,6 +148,10 @@ type SteamConfig struct {
 	// inventory-history and market-history endpoints. Empty means only
 	// public endpoints are usable.
 	Session string
+	// RefreshToken is the WebBrowser refresh token minted by the one-time
+	// Node CLI (tools/steam-auth). When set, web cookies derive
+	// automatically and Session is not used.
+	RefreshToken string
 	// PriceTTL bounds caching of current market prices.
 	PriceTTL time.Duration
 	// Currency is the Steam wallet currency code for market prices (1 = USD).
@@ -321,9 +325,10 @@ func LoadFrom(get Loader) (*Config, error) {
 		return nil, err
 	}
 	cfg.Steam = SteamConfig{
-		SteamID:  strings.TrimSpace(getString(get, "STEAM_ID", "")),
-		APIKey:   strings.TrimSpace(getString(get, "STEAM_API_KEY", "")),
-		Session:  strings.TrimSpace(getString(get, "STEAM_SESSION", "")),
+		SteamID:      strings.TrimSpace(getString(get, "STEAM_ID", "")),
+		APIKey:       strings.TrimSpace(getString(get, "STEAM_API_KEY", "")),
+		Session:      strings.TrimSpace(getString(get, "STEAM_SESSION", "")),
+		RefreshToken: strings.TrimSpace(getString(get, "STEAM_REFRESH_TOKEN", "")),
 		PriceTTL: time.Duration(priceTTLMin) * time.Minute,
 		Currency: steamCurrency,
 	}
