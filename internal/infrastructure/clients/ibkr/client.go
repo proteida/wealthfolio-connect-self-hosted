@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,29 +50,43 @@ type RawAccount struct {
 	Currency       string
 }
 
-// RawPosition is one position row.
+// RawPosition is one position row. Derivative contracts carry their full
+// identity: without ConID/strike/expiry/right, different option series
+// collapse into one indistinguishable row.
 type RawPosition struct {
-	Account  string
-	Symbol   string
-	SecType  string // STK, OPT, FUT, CASH, ...
-	Exchange string
-	Currency string
-	Quantity float64
-	AvgCost  float64
+	Account     string
+	Symbol      string
+	SecType     string // STK, OPT, FUT, CASH, ...
+	Exchange    string
+	Currency    string
+	Quantity    float64
+	AvgCost     float64
+	ConID       int64
+	LocalSymbol string // e.g. "AAPL  260116C00250000"
+	Strike      float64
+	Expiry      string // LastTradeDateOrContractMonth: "YYYYMMDD" for options
+	Right       string // "C"/"CALL" or "P"/"PUT"
+	Multiplier  float64
 }
 
 // RawExecution is one execution (fill) row from the IB Gateway.
 type RawExecution struct {
-	ExecID   string
-	Account  string
-	Symbol   string
-	SecType  string
-	Exchange string
-	Currency string
-	Side     string // "BOT" or "SLD"
-	Shares   float64
-	Price    float64
-	Time     string // "YYYYMMDD HH:MM:SS" format from IB
+	ExecID      string
+	Account     string
+	Symbol      string
+	SecType     string
+	Exchange    string
+	Currency    string
+	Side        string // "BOT" or "SLD"
+	Shares      float64
+	Price       float64
+	Time        string // "YYYYMMDD HH:MM:SS" format from IB
+	ConID       int64
+	LocalSymbol string
+	Strike      float64
+	Expiry      string
+	Right       string
+	Multiplier  float64
 }
 
 // Client is the IBKR BrokerClient.
@@ -166,8 +181,13 @@ func Translate(raw RawSnapshot) domainsync.BrokerSnapshot {
 		accounts = append(accounts, acc)
 
 		positions := make([]brokerage.Position, 0, len(posByAcc[accID]))
+		options := make([]brokerage.OptionPosition, 0)
 		for _, p := range posByAcc[accID] {
 			if p.Quantity == 0 {
+				continue
+			}
+			if p.SecType == "OPT" {
+				options = append(options, optionPosition(p))
 				continue
 			}
 			typeCode := ibSecTypeToCode(p.SecType)
@@ -198,8 +218,9 @@ func Translate(raw RawSnapshot) domainsync.BrokerSnapshot {
 				Cash:        summary.TotalCash,
 				BuyingPower: summary.BuyingPower,
 			}},
-			Positions:  positions,
-			CapturedAt: now,
+			Positions:       positions,
+			OptionPositions: options,
+			CapturedAt:      now,
 		})
 	}
 
@@ -211,8 +232,39 @@ func Translate(raw RawSnapshot) domainsync.BrokerSnapshot {
 		if e.Side == "SLD" {
 			actType = brokerage.ActivitySell
 		}
+		ts, ok := parseIBTime(e.Time)
+		if !ok {
+			// Reject unparseable timestamps instead of stamping today:
+			// a moving trade date rewrites history on every sync.
+			continue
+		}
 		sym := formatSymbol(e.Symbol, e.Exchange, e.Currency)
-		ts := parseIBTime(e.Time)
+		rawSym := e.Symbol
+		mult := e.Multiplier
+		if mult <= 0 {
+			mult = 1
+		}
+		var optSym *brokerage.OptionSymbol
+		if e.SecType == "OPT" {
+			rawSym = e.LocalSymbol
+			if rawSym == "" {
+				rawSym = occSymbol(e.Symbol, e.Expiry, e.Right, e.Strike)
+			}
+			optSym = &brokerage.OptionSymbol{
+				Ticker:         sym,
+				OptionType:     optionSide(e.Right),
+				StrikePrice:    e.Strike,
+				ExpirationDate: parseOptionExpiry(e.Expiry),
+				IsMiniOption:   mult != 100,
+				Underlying: brokerage.Symbol{
+					Symbol:    sym,
+					RawSymbol: e.Symbol,
+					Type:      brokerage.SymbolType{Code: "EQUITY", IsSupported: true},
+					Exchange:  brokerage.Exchange{Code: e.Exchange},
+					Currency:  brokerage.Currency{Code: e.Currency},
+				},
+			}
+		}
 		activities[accID] = append(activities[accID], brokerage.Activity{
 			ID:        e.ExecID,
 			AccountID: accID,
@@ -221,11 +273,14 @@ func Translate(raw RawSnapshot) domainsync.BrokerSnapshot {
 			TradeDate: ts,
 			Price:     e.Price,
 			Units:     e.Shares,
-			Amount:    e.Price * e.Shares,
-			Currency:  brokerage.Currency{Code: e.Currency},
+			// Contract multiplier applies: one standard 100-multiplier
+			// option at a $2 premium moves $200, not $2.
+			Amount:       e.Price * e.Shares * mult,
+			Currency:     brokerage.Currency{Code: e.Currency},
+			OptionSymbol: optSym,
 			Symbol: &brokerage.Symbol{
 				Symbol:    sym,
-				RawSymbol: e.Symbol,
+				RawSymbol: rawSym,
 				Name:      sym,
 				Type:      brokerage.SymbolType{Code: ibSecTypeToCode(e.SecType), IsSupported: true},
 				Exchange:  brokerage.Exchange{Code: e.Exchange},
@@ -455,13 +510,19 @@ func (w *gatherWrapper) Position(account string, contract *ibapi.Contract, posit
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.positions = append(w.positions, RawPosition{
-		Account:  account,
-		Symbol:   contract.Symbol,
-		SecType:  contract.SecType,
-		Exchange: contract.Exchange,
-		Currency: contract.Currency,
-		Quantity: position.Float(),
-		AvgCost:  avgCost,
+		Account:     account,
+		Symbol:      contract.Symbol,
+		SecType:     contract.SecType,
+		Exchange:    contract.Exchange,
+		Currency:    contract.Currency,
+		Quantity:    position.Float(),
+		AvgCost:     avgCost,
+		ConID:       contract.ConID,
+		LocalSymbol: contract.LocalSymbol,
+		Strike:      contract.Strike,
+		Expiry:      contract.LastTradeDateOrContractMonth,
+		Right:       contract.Right,
+		Multiplier:  contractMultiplier(contract.Multiplier),
 	})
 }
 
@@ -481,16 +542,22 @@ func (w *gatherWrapper) ExecDetails(reqID int64, contract *ibapi.Contract, execu
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.executions = append(w.executions, RawExecution{
-		ExecID:   execution.ExecID,
-		Account:  execution.AcctNumber,
-		Symbol:   contract.Symbol,
-		SecType:  contract.SecType,
-		Exchange: execution.Exchange,
-		Currency: contract.Currency,
-		Side:     execution.Side,
-		Shares:   execution.Shares.Float(),
-		Price:    execution.Price,
-		Time:     execution.Time,
+		ExecID:      execution.ExecID,
+		Account:     execution.AcctNumber,
+		Symbol:      contract.Symbol,
+		SecType:     contract.SecType,
+		Exchange:    execution.Exchange,
+		Currency:    contract.Currency,
+		Side:        execution.Side,
+		Shares:      execution.Shares.Float(),
+		Price:       execution.Price,
+		Time:        execution.Time,
+		ConID:       contract.ConID,
+		LocalSymbol: contract.LocalSymbol,
+		Strike:      contract.Strike,
+		Expiry:      contract.LastTradeDateOrContractMonth,
+		Right:       contract.Right,
+		Multiplier:  contractMultiplier(contract.Multiplier),
 	})
 }
 
@@ -513,8 +580,53 @@ func (w *gatherWrapper) Error(reqID int64, errorTime int64, errCode int64, errSt
 }
 
 // parseIBTime parses IB's execution time format "YYYYMMDD HH:MM:SS" (or
-// variants like "YYYYMMDD-HH:MM:SS") into a UTC time.Time.
-func parseIBTime(s string) time.Time {
+// variants like "YYYYMMDD-HH:MM:SS") into a UTC time.Time. A trailing zone
+// name ("US/Eastern", "America/New_York", ...) is honored when it resolves.
+// The second return is false when nothing parses: callers must reject the
+// record, never stamp time.Now() (a moving date rewrites history on every
+// sync).
+// usZoneOffsets is the explicit offset policy for US market timezone
+// abbreviations. time.Parse would otherwise accept any alphabetic token at
+// a fabricated zero offset ("EST" → UTC), silently shifting executions by
+// hours. Only listed abbreviations resolve; everything else is rejected.
+var usZoneOffsets = map[string]int{
+	"EST": -5 * 3600,
+	"EDT": -4 * 3600,
+	"CST": -6 * 3600,
+	"CDT": -5 * 3600,
+	"MST": -7 * 3600,
+	"MDT": -6 * 3600,
+	"PST": -8 * 3600,
+	"PDT": -7 * 3600,
+}
+
+func parseIBTime(s string) (time.Time, bool) {
+	// A trailing slash-form zone ("US/Eastern") must resolve explicitly:
+	// falling through to abbreviation parsing would stamp a zero offset.
+	if i := strings.LastIndex(s, " "); i > 0 {
+		if zone := strings.TrimSpace(s[i+1:]); strings.Contains(zone, "/") {
+			loc, err := time.LoadLocation(zone)
+			if err != nil {
+				return time.Time{}, false
+			}
+			t, err := time.ParseInLocation("20060102 15:04:05", strings.TrimSpace(s[:i]), loc)
+			if err != nil {
+				return time.Time{}, false
+			}
+			return t.UTC(), true
+		}
+		if offset, ok := usZoneOffsets[strings.ToUpper(strings.TrimSpace(s[i+1:]))]; ok {
+			if t, err := time.ParseInLocation("20060102 15:04:05", strings.TrimSpace(s[:i]), time.FixedZone("", offset)); err == nil {
+				return t.UTC(), true
+			}
+			return time.Time{}, false
+		}
+		// Trailing alphabetic token that is neither a slash-form zone nor
+		// a recognized abbreviation: reject rather than zero-offset it.
+		if isAlphaToken(strings.TrimSpace(s[i+1:])) {
+			return time.Time{}, false
+		}
+	}
 	layouts := []string{
 		"20060102 15:04:05",
 		"20060102-15:04:05",
@@ -522,10 +634,104 @@ func parseIBTime(s string) time.Time {
 	}
 	for _, l := range layouts {
 		if t, err := time.Parse(l, s); err == nil {
-			return t.UTC()
+			return t.UTC(), true
 		}
 	}
-	return time.Now().UTC()
+	return time.Time{}, false
+}
+
+// isAlphaToken reports whether s looks like a zone abbreviation (letters
+// only), as opposed to a malformed datetime.
+func isAlphaToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
+			return false
+		}
+	}
+	return true
+}
+
+// contractMultiplier parses IB's contract multiplier ("100" for standard
+// equity options, "" for stocks). Empty or invalid values mean 1: amounts
+// stay unscaled rather than zeroed.
+func contractMultiplier(s string) float64 {
+	if s == "" {
+		return 1
+	}
+	if m, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil && m > 0 {
+		return m
+	}
+	return 1
+}
+
+// optionSide maps IB's Right field to the domain option side.
+func optionSide(right string) brokerage.OptionSide {
+	switch strings.ToUpper(strings.TrimSpace(right)) {
+	case "C", "CALL":
+		return brokerage.OptionCall
+	case "P", "PUT":
+		return brokerage.OptionPut
+	default:
+		return ""
+	}
+}
+
+// parseOptionExpiry parses IB's LastTradeDateOrContractMonth ("YYYYMMDD"
+// for options). Unparseable values yield the zero time (unknown expiry,
+// never today).
+func parseOptionExpiry(s string) time.Time {
+	if t, err := time.Parse("20060102", strings.TrimSpace(s)); err == nil {
+		return t.UTC()
+	}
+	return time.Time{}
+}
+
+// occSymbol renders an OCC-style contract descriptor
+// ("AAPL  260116C00250000") when IB omits the local symbol, so option
+// series stay distinguishable by RawSymbol.
+func occSymbol(underlying, expiry, right string, strike float64) string {
+	side := "C"
+	if optionSide(right) == brokerage.OptionPut {
+		side = "P"
+	}
+	exp := strings.TrimSpace(expiry)
+	if len(exp) == 8 {
+		exp = exp[2:]
+	}
+	return fmt.Sprintf("%-6s%s%s%08d", underlying, exp, side, int64(math.Round(strike*1000)))
+}
+
+// optionPosition maps one OPT position row into the domain's option
+// holdings. No market price arrives on the position feed, so Price stays
+// zero (unknown); AvgCost is IB's reported per-unit average cost.
+func optionPosition(p RawPosition) brokerage.OptionPosition {
+	sym := formatSymbol(p.Symbol, p.Exchange, p.Currency)
+	mult := p.Multiplier
+	if mult <= 0 {
+		mult = 1
+	}
+	return brokerage.OptionPosition{
+		OptionSymbol: brokerage.OptionSymbol{
+			Ticker:         sym,
+			OptionType:     optionSide(p.Right),
+			StrikePrice:    p.Strike,
+			ExpirationDate: parseOptionExpiry(p.Expiry),
+			IsMiniOption:   mult != 100,
+			Underlying: brokerage.Symbol{
+				Symbol:    sym,
+				RawSymbol: p.Symbol,
+				Type:      brokerage.SymbolType{Code: "EQUITY", IsSupported: true},
+				Exchange:  brokerage.Exchange{Code: p.Exchange},
+				Currency:  brokerage.Currency{Code: p.Currency},
+			},
+		},
+		Units:                p.Quantity,
+		AveragePurchasePrice: p.AvgCost,
+		Currency:             brokerage.Currency{Code: p.Currency},
+	}
 }
 
 // ibSecTypeToCode maps IB security type strings to canonical type codes.

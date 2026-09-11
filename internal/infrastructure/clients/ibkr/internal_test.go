@@ -9,6 +9,74 @@ import (
 	"github.com/scmhub/ibapi"
 )
 
+func TestParseIBTime(t *testing.T) {
+	for _, in := range []string{"20260115 10:00:00", "20260115-10:00:00", "2026-01-15 10:00:00"} {
+		got, ok := parseIBTime(in)
+		if !ok {
+			t.Fatalf("parseIBTime(%q) rejected a valid layout", in)
+		}
+		if got.Format("2006-01-02 15:04:05") != "2026-01-15 10:00:00" {
+			t.Fatalf("parseIBTime(%q) = %v", in, got)
+		}
+	}
+	// Timezone-qualified strings resolve when the zone loads.
+	if got, ok := parseIBTime("20260115 10:00:00 US/Eastern"); ok {
+		if got.Format("2006-01-02 15:04:05") != "2026-01-15 15:00:00" {
+			t.Fatalf("zoned parse = %v, want 15:00 UTC", got)
+		}
+	} else {
+		t.Log("US/Eastern unavailable in local tzdata; zoned rows stay rejected")
+	}
+	// Recognized abbreviations resolve through the explicit offset policy,
+	// never a fabricated zero offset.
+	for zone, want := range map[string]string{"EST": "2026-01-15 15:00:00", "EDT": "2026-01-15 14:00:00", "PST": "2026-01-15 18:00:00"} {
+		got, ok := parseIBTime("20260115 10:00:00 " + zone)
+		if !ok {
+			t.Fatalf("parseIBTime rejected recognized abbreviation %q", zone)
+		}
+		if got.Format("2006-01-02 15:04:05") != want {
+			t.Fatalf("parseIBTime(%q) = %v, want %s", zone, got, want)
+		}
+	}
+	// Unknown abbreviations are rejected, not zero-offset.
+	if _, ok := parseIBTime("20260115 10:00:00 XYZ"); ok {
+		t.Fatal("parseIBTime accepted an unknown abbreviation")
+	}
+	if _, ok := parseIBTime("bogus"); ok {
+		t.Fatal("parseIBTime accepted garbage")
+	}
+	if _, ok := parseIBTime("20260115 10:00:00 No/Such-Zone"); ok {
+		t.Fatal("parseIBTime accepted an unresolvable zone")
+	}
+}
+
+func TestContractMultiplier(t *testing.T) {
+	cases := map[string]float64{"": 1, "100": 100, " 50 ": 50, "bogus": 1, "0": 1, "-5": 1}
+	for in, want := range cases {
+		if got := contractMultiplier(in); got != want {
+			t.Errorf("contractMultiplier(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestOptionHelpers(t *testing.T) {
+	if optionSide("C") != "CALL" || optionSide("put") != "PUT" {
+		t.Fatal("optionSide mapping broken")
+	}
+	if optionSide("X") != "" {
+		t.Fatal("unknown right must map to empty")
+	}
+	if got := parseOptionExpiry("20260116"); got.Format("2006-01-02") != "2026-01-16" {
+		t.Fatalf("parseOptionExpiry = %v", got)
+	}
+	if !parseOptionExpiry("bogus").IsZero() {
+		t.Fatal("bad expiry must yield zero time, never today")
+	}
+	if got := occSymbol("AAPL", "20260116", "C", 250); got != "AAPL  260116C00250000" {
+		t.Fatalf("occSymbol = %q", got)
+	}
+}
+
 func TestAtof(t *testing.T) {
 	cases := map[string]float64{
 		"":        0,
