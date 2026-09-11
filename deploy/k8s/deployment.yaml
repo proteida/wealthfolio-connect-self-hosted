@@ -25,6 +25,8 @@ stringData:
   # ---- Binance ----
   BINANCE_API_KEY: "CHANGE_ME"
   BINANCE_API_SECRET: "CHANGE_ME"
+  # Optional exact Spot pairs for history (empty = auto from holdings).
+  # BINANCE_TRADE_SYMBOLS: "BTCUSDT,ETHBTC"
   # ---- OKX CEX ----
   OKX_API_KEY: "CHANGE_ME"
   OKX_API_SECRET: "CHANGE_ME"
@@ -39,6 +41,10 @@ stringData:
   BITGET_PASSPHRASE: "CHANGE_ME"
   # ---- Hyperliquid (read-only wallet) ----
   HYPERLIQUID_WALLET: "0xCHANGE_ME"
+  # ---- TON Center API v3 (native TON + Jetton balances and history) ----
+  TONCENTER_API_KEY: "CHANGE_ME"
+  # Comma-separated TON addresses, e.g. "UQAbc...,0:def...".
+  TON_WALLETS: "CHANGE_ME"
 ---
 apiVersion: v1
 kind: ConfigMap

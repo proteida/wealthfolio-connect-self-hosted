@@ -163,7 +163,7 @@ var _ = Describe("CEXClient", func() {
 		acts := snap.Activities["okx-spot"]
 		Expect(acts).To(HaveLen(4))
 		Expect(acts[1].Fee).To(Equal(0.01))
-		Expect(acts[1].FeeAsset).To(Equal("USDT"))
+		Expect(acts[1].FeeAsset).To(Equal("USD"))
 		// Positive fee values are rebates: never recorded as a charged fee.
 		Expect(acts[3].Fee).To(BeZero())
 		Expect(acts[3].Description).To(ContainSubstring("rebate"))
@@ -228,6 +228,22 @@ var _ = Describe("Web3Client", func() {
 		Expect(snap.Holdings[0].Positions).To(HaveLen(1))           // ETH only; SCAM filtered, DUST dropped
 		Expect(snap.Holdings[0].Positions[0].Symbol.Symbol).To(Equal("ETH"))
 		Expect(snap.Holdings[0].Positions[0].Symbol.Exchange.Code).To(Equal("ETHEREUM"))
+	})
+
+	It("does not request TON wallets", func() {
+		requests := 0
+		srv, hc := newServer(func(w http.ResponseWriter, _ *http.Request) {
+			requests++
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "0", "data": []any{}})
+		})
+		defer srv.Close()
+
+		c := okx.NewWeb3(okx.Credentials{APIKey: "k", Secret: "s", Passphrase: "p"},
+			[]okx.Wallet{{Address: "UQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}, srv.URL, hc)
+		snap, err := c.Fetch(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(requests).To(Equal(0))
+		Expect(snap.Accounts).To(BeEmpty())
 	})
 })
 

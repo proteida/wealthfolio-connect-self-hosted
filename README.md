@@ -48,9 +48,10 @@ no third-party data aggregator sits between you and the exchange:
 - **Interactive Brokers** — socket protocol to a local **IB Gateway / TWS** (`scmhub/ibapi`)
 - **Binance Spot** — REST API (`adshao/go-binance/v2`)
 - **OKX CEX** — signed v5 REST API (HMAC-SHA256)
-- **OKX Web3 / DEX** — signed v5 REST API for on-chain wallet aggregation
+- **OKX Web3 / DEX** — signed v6 OnchainOS API for on-chain wallet balances + history
 - **Bitget Spot** — signed v2 REST API
 - **Hyperliquid** — public `/info` endpoint, wallet-address only (read-only)
+- **TON** — TON Center API v3 for native + Jetton balances and transfer history
 
 All data is normalised into the Wealthfolio API shape and persisted in
 PostgreSQL on your own infrastructure.
@@ -233,10 +234,18 @@ enabled. Allow this server's IP in the gateway's *Trusted IPs* list.
 
 Create a **read-only** API key (Spot account permissions are sufficient).
 
-| Name                 | Description       |
-| -------------------- | ----------------- |
-| `BINANCE_API_KEY`    | Binance API key.  |
-| `BINANCE_API_SECRET` | Binance secret.   |
+| Name                    | Description                                                                                                  |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `BINANCE_API_KEY`       | Binance API key.                                                                                             |
+| `BINANCE_API_SECRET`    | Binance secret.                                                                                              |
+| `BINANCE_TRADE_SYMBOLS` | Optional comma-separated exact Spot pairs (e.g. `BTCUSDT,ETHBTC`). Empty uses held `*USDT` pairs plus pairs with saved trades. |
+
+Spot history uses `GET /api/v3/myTrades` in small bounded batches (at most
+20 history requests per sync, rotating fairly across pairs). Trade cursors
+are derived from persisted activities, so a failed write is retried instead
+of skipped. All requests share a local 600 request-weight/minute guard
+(10% of Binance's 6000 limit) with backoff on `Retry-After`/`-1003`
+responses, so one sync can no longer exhaust the IP budget.
 
 ### OKX CEX (signed v5 REST)
 
@@ -249,10 +258,13 @@ required).
 | `OKX_API_SECRET` | OKX API secret.       |
 | `OKX_PASSPHRASE` | OKX API passphrase.   |
 
-### OKX Web3 / DEX (signed v5 REST + wallet list)
+### OKX Web3 / DEX (signed v6 REST + wallet list)
 
 The Web3 client uses a separate set of OKX credentials with **DEX API**
 permissions enabled, and aggregates balances across the wallets you list.
+Transfer quantities round to cents so in/out legs net cleanly; transfers
+always carry an explicit `mapping_metadata.flow.is_external` flag (`true`
+for counterparties outside the configured wallets).
 
 | Name                  | Description                                                                                              |
 | --------------------- | -------------------------------------------------------------------------------------------------------- |
@@ -263,6 +275,12 @@ permissions enabled, and aggregates balances across the wallets you list.
 
 `chains` are OKX chain indexes — see [OKX docs](https://www.okx.com/web3/build/docs/waas/dex-supported-chains)
 (e.g. `1` = Ethereum, `56` = BSC, `42161` = Arbitrum, `137` = Polygon, `10` = Optimism, `8453` = Base).
+Omit `chains` for EVM wallets to auto-discover funded chains (cached 15 minutes).
+
+Transaction history uses `/api/v6/dex/post-transaction/transactions-by-address`
+with `limit=20` on every request — the live API rejects larger limits for
+multi-chain queries (`81001`), despite what the docs suggest. History
+failures leave balances intact and only mark transaction sync incomplete.
 
 ### Bitget Spot (signed v2 REST)
 
@@ -280,6 +298,59 @@ wallet whose perpetuals + spot balances you want tracked.
 | Name                 | Description                                  |
 | -------------------- | -------------------------------------------- |
 | `HYPERLIQUID_WALLET` | EVM-style wallet address (`0x…`). Read-only. |
+
+### TON (TON Center API v3, wallet list)
+
+Tracks native TON plus all Jetton balances and the full transfer history
+for a few explicitly configured wallets. Balances come from `/accountStates`
+and `/jetton/wallets` (with symbol/decimals from `/jetton/masters`); history
+comes from the decoded `/actions` API (`limit=1000`, offset pages until a
+short page), grouped by `trace_id`. Only successful actions classify:
+`jetton_swap` → swap, `stake_deposit` → staking (amount, tokens minted,
+asset), every other token movement → `TRANSFER_IN`/`TRANSFER_OUT`.
+Derived legs take precedence over primitive legs in the same trace, so swaps
+and stakes never double count. Swap/stake pairs emit the SELL leg first with
+the BUY leg one second later, keeping causal order in date-sorted views.
+Multi-leg traces and single wallet outflows are verified against raw message
+trees (`/traces?tx_hash=…&include_actions=true` plus
+`/actions?tx_hash=…&include_transactions=true`, capped per wallet). Vault
+deposits pair by causality, never by amount or timestamp: the vault echoes
+the deposit `query_id` in its mint message (strongest link), otherwise a
+mint credited to the user's jetton wallet (or attributed via
+`response_address`) from protocol intake pairs structurally, and burns pair
+with the redeemed transfer the same way. Pairs emit USD-routed
+`STAKE_SELL`/`STAKE_BUY` conversions (`$TOKEN_IN → USD → $TOKEN_OUT`);
+async receipts settling in another trace stay separate. Outflows proven to
+enter a protocol are labeled as such; complete trees missing a claimed
+protocol party downgrade interpreted legs to primitives, and verification
+failures keep interpreted legs with the valued basis fallback.
+`429`/indexer timeouts are retried with backoff honoring `Retry-After`.
+
+Swaps and stakes are routed through USD on both legs: stablecoin sides convert
+1:1, other sides use TonAPI's chart history at the transaction time (wide
+window per token, cached; TON/GRAM and tickers like USDT directly, other
+Jettons by master address), with CoinGecko history as fallback (stablecoins
+and TON checked first there too). Pair prices carry a tiny role bias (sell up,
+buy down, exact $1 legs exempt) so the amounts the app derives as quantity ×
+unit_price can never leave a negative cash remainder. TonAPI retention reaches roughly 180 days,
+CoinGecko 365 — older legs stay unvalued rather than invented, and throttled
+lookups fail fast into per-token/per-day negative caches instead of stalling
+the sync. Every token movement is a `TRANSFER_IN`/`TRANSFER_OUT` leg with
+units and value rounded to cents so in/out legs net cleanly (swap/stake
+`SELL`/`BUY` legs keep exact chain values); legs always carry an explicit `mapping_metadata.flow.is_external` flag
+(`true` when the counterparty is none of the configured wallets, `false`
+for transfers between tracked wallets so the app validates the pair),
+swaps and stakes add `SELL`/`BUY` legs with the buy leg one second after the
+sell leg so date-sorted views keep causal order. Single legs carry cost basis
+(Price/Amount) when their token has a feed. Vault shares minted without any
+transfer action additionally emit a synthetic `BUY` attributed from the
+master-bound deposits — but only when history shows no inbound leg of that
+token at all. Everything stays marked for review.
+
+| Name               | Description                                                                                                     |
+| ------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `TONCENTER_API_KEY` | TON Center API key, sent as `X-API-Key` (server-side only). Empty falls back to the 1 RPS anonymous quota. |
+| `TON_WALLETS`       | Comma-separated TON addresses in any form (e.g. `UQ…` or `0:…`). Case is preserved — TON addresses are case-sensitive. |
 
 ---
 
@@ -441,7 +512,7 @@ wealthfolio-connect-open/
 │   │       ├── futu/           # TCP → local OpenD
 │   │       ├── ibkr/           # socket → local IB Gateway / TWS
 │   │       ├── binance/        # Spot REST
-│   │       ├── okx/            # CEX + Web3/DEX (signed v5)
+│   │       ├── okx/            # CEX (signed v5) + Web3/DEX (signed v6)
 │   │       ├── bitget/         # Spot REST (signed v2)
 │   │       ├── hyperliquid/    # public /info
 │   │       └── cexcommon/      # shared snapshot translation

@@ -56,8 +56,9 @@ type CryptoConfig struct {
 	OKXPassphrase string
 
 	// Binance Spot (api.binance.com /api/v3/...)
-	BinanceAPIKey string
-	BinanceSecret string
+	BinanceAPIKey       string
+	BinanceSecret       string
+	BinanceTradeSymbols []string // optional exact Spot pairs; empty uses held USDT pairs and persisted pairs
 
 	// Bitget Spot (api.bitget.com /api/v2/spot/...)
 	BitgetAPIKey     string
@@ -74,7 +75,14 @@ type CryptoConfig struct {
 	OKXWeb3APIKey     string
 	OKXWeb3Secret     string
 	OKXWeb3Passphrase string
-}
+
+	// TON Center API v3 (toncenter.com): native TON + Jetton balances and
+	// history for a few explicitly configured wallets.
+	TONCenterAPIKey string
+	// TONWallets holds TON addresses in any form (raw or user-friendly),
+	// comma-separated via TON_WALLETS. Case is preserved: TON addresses
+	// are case-sensitive.
+	TONWallets []string}
 
 // Config is the single source of truth for runtime configuration.
 type Config struct {
@@ -258,6 +266,13 @@ func LoadFrom(get Loader) (*Config, error) {
 		OKXWeb3Passphrase: getString(get, "OKX_WEB3_PASSPHRASE", ""),
 	}
 
+	for _, symbol := range strings.Split(getString(get, "BINANCE_TRADE_SYMBOLS", ""), ",") {
+		if symbol = strings.ToUpper(strings.TrimSpace(symbol)); symbol != "" {
+			cfg.Crypto.BinanceTradeSymbols = append(cfg.Crypto.BinanceTradeSymbols, symbol)
+		}
+	}
+	cfg.Crypto.TONCenterAPIKey = getString(get, "TONCENTER_API_KEY", "")
+	cfg.Crypto.TONWallets = splitAndTrim(getString(get, "TON_WALLETS", ""), ",")
 	// DeFi wallets (consumed by the OKX Web3 integration).
 	if raw, ok := get("DEFI_WALLETS"); ok && strings.TrimSpace(raw) != "" {
 		var wallets []DefiWallet

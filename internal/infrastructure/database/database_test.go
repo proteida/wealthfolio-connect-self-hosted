@@ -71,7 +71,35 @@ var _ = Describe("Migrate", func() {
 			stubMigrator{models: []any{&dummyModel{}}}, nil)
 		Expect(err).To(MatchError(ContainSubstring("auto-migrate")))
 	})
+
+	It("runs data migrations after schema and propagates their errors", func() {
+		db, _, sqlDB := newMockGorm()
+		defer sqlDB.Close()
+		m := &stubDataMigrator{err: errors.New("row boom")}
+		err := database.Migrate(context.Background(), db, m, nil)
+		Expect(err).To(MatchError(ContainSubstring("data migration")))
+		Expect(m.calls).To(Equal(1))
+	})
+
+	It("skips absent data migrations without error", func() {
+		db, _, sqlDB := newMockGorm()
+		defer sqlDB.Close()
+		Expect(database.Migrate(context.Background(), db, stubMigrator{}, nil)).To(Succeed())
+	})
 })
+
+// stubDataMigrator implements both Migrator and database.DataMigrator.
+type stubDataMigrator struct {
+	calls int
+	err   error
+}
+
+func (s stubDataMigrator) Models() []any { return nil }
+
+func (s *stubDataMigrator) MigrateData(context.Context, *gorm.DB) error {
+	s.calls++
+	return s.err
+}
 
 // dummyModel is a tiny GORM model used only to force AutoMigrate to issue
 // at least one statement against the mock.

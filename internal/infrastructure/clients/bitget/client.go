@@ -74,7 +74,13 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 	if err != nil {
 		prices = map[string]float64{} // best-effort
 	}
-	return cexcommon.Translate("bitget", "Bitget", buildSnapshot(balances, prices)), nil
+	snapshot := buildSnapshot(balances, prices)
+	if err != nil {
+		// Without prices, owned assets carry zero valuation: the snapshot
+		// is partial and must never replace the last complete holdings.
+		snapshot.Partial = true
+	}
+	return cexcommon.Translate("bitget", "Bitget", snapshot), nil
 }
 
 type rawAsset struct {

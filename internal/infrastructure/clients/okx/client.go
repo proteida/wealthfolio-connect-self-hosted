@@ -1,8 +1,9 @@
 // Package okx implements two BrokerClients backed by the OKX REST API:
 //
 //   - CEX  : /api/v5/account/balance — the regular spot/funding account
-//   - Web3 : /api/v5/dex/balance/all-token-balances-by-address — wallet
-//     balances on every supported EVM chain
+//   - Web3 : /api/v6/dex/balance/all-token-balances-by-address and
+//     /api/v6/dex/post-transaction/transactions-by-address — wallet
+//     balances and history on every supported EVM chain
 //
 // Both clients share the same v5 HMAC-SHA256 signing scheme (the Web3
 // product issues its own API key but signing is identical):
@@ -23,8 +24,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -56,6 +59,29 @@ func pairQuote(instID string) string {
 	return strings.ToUpper(parts[1])
 }
 
+// isTONWallet identifies TON user-friendly and raw addresses. The OKX
+// all-token-balances-by-address endpoint only supports EVM addresses, so TON
+// wallets must be ignored before making a request.
+func isTONWallet(address string) bool {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return false
+	}
+	upper := strings.ToUpper(address)
+	return strings.HasPrefix(upper, "EQ") ||
+		strings.HasPrefix(upper, "UQ") ||
+		strings.HasPrefix(address, "0:") ||
+		strings.HasPrefix(address, "-1:")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
 
 // Credentials are the per-request fields used to sign every authenticated
 // call. Both the CEX and Web3 products use the same shape.
@@ -67,6 +93,9 @@ type Credentials struct {
 
 const (
 	defaultBaseURL = "https://www.okx.com"
+	// web3BaseURL is the host for the OKX Web3/OnchainOS product. It is
+	// separate from the CEX host: v6 DEX endpoints live here.
+	web3BaseURL = "https://web3.okx.com"
 )
 
 // ============================== CEX client ==============================
@@ -410,11 +439,14 @@ func (c *CEXClient) signedGet(ctx context.Context, path string, query url.Values
 // We aggregate every configured wallet into a single connection ("okx-web3")
 // with one brokerage Account per (chain, wallet).
 type Web3Client struct {
-	baseURL string
-	creds   Credentials
-	wallets []Wallet
-	http    HTTPDoer
-	log     zerolog.Logger
+	baseURL    string
+	creds      Credentials
+	wallets    []Wallet
+	http       HTTPDoer
+	log        zerolog.Logger
+	chainMu    sync.Mutex
+	chainCache map[string]chainCacheEntry
+	now        func() time.Time
 }
 
 // Wallet is one configured user wallet driven through OKX Web3.
@@ -427,13 +459,13 @@ type Wallet struct {
 // NewWeb3 builds a Web3 client.
 func NewWeb3(creds Credentials, wallets []Wallet, baseURL string, h HTTPDoer) *Web3Client {
 	if baseURL == "" {
-		baseURL = defaultBaseURL
+		baseURL = web3BaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	if h == nil {
 		h = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Web3Client{baseURL: baseURL, creds: creds, wallets: wallets, http: h, log: zerolog.Nop()}
+	return &Web3Client{baseURL: baseURL, creds: creds, wallets: wallets, http: h, log: zerolog.Nop(), chainCache: make(map[string]chainCacheEntry), now: time.Now}
 }
 
 // SetLogger attaches a structured logger so transient per-wallet failures
@@ -471,30 +503,92 @@ func (c *Web3Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, erro
 	}
 	out := make([]Web3WalletData, 0, len(c.wallets))
 	for _, w := range c.wallets {
-		tokens, err := c.fetchWallet(ctx, w)
-		if err != nil {
-			c.log.Warn().
-				Err(err).
-				Str("address", w.Address).
-				Str("label", w.Label).
-				Msg("okx_web3: skipping wallet after fetch failure")
+		if isTONWallet(w.Address) {
+			// The OKX balance and history endpoints are EVM-only.
+			// Never send requests for TON wallets.
 			continue
 		}
-		out = append(out, Web3WalletData{Wallet: w, Tokens: tokens})
+		chains, historyChains, err := c.resolveChains(ctx, w)
+		if err != nil {
+			c.log.Warn().Err(err).Str("address", w.Address).Str("label", w.Label).
+				Msg("okx_web3: skipping wallet after chain discovery failure")
+			continue
+		}
+		w.Chains = chains
+		if len(chains) == 0 && len(historyChains) == 0 {
+			// No funded chains and no known-active chains: the history
+			// scope is unknown, so it stays incomplete instead of reading
+			// as completed empty history.
+			out = append(out, Web3WalletData{Wallet: w})
+			continue
+		}
+		if hasUnsupportedChain(chains) {
+			// OKX's balance and transaction endpoints both reject TON,
+			// Solana, and Bitcoin chain IDs. Keep the configured wallet
+			// account, but do not send unsupported requests.
+			out = append(out, Web3WalletData{Wallet: w})
+			continue
+		}
+		var tokens []Web3Token
+		if len(chains) > 0 {
+			// Balances run over funded chains only: with no funded chains
+			// there is nothing to value, and an empty chain list would
+			// send one unrestricted balance request.
+			var err error
+			tokens, err = c.fetchWallet(ctx, w)
+			if err != nil {
+				c.log.Warn().Err(err).Str("address", w.Address).Str("label", w.Label).
+					Msg("okx_web3: skipping wallet after fetch failure")
+				continue
+			}
+		}
+		// History runs over the active-chain scope, not the funded-chain
+		// scope, so withdrawals that emptied a chain still import. An empty
+		// scope can never read as complete.
+		hw := w
+		hw.Chains = historyChains
+		if len(hw.Chains) == 0 {
+			hw.Chains = chains
+		}
+		transactions, txErr := c.fetchTransactions(ctx, hw)
+		if txErr != nil {
+			c.log.Warn().Err(txErr).Str("address", w.Address).Msg("okx_web3: transaction history incomplete")
+		}
+		out = append(out, Web3WalletData{Wallet: w, Tokens: tokens, Activities: transactions, ActivitiesFetched: txErr == nil && len(hw.Chains) > 0})
 	}
 	return TranslateWeb3(out), nil
 }
 
 // Web3WalletData bundles one wallet's payload for the translator.
 type Web3WalletData struct {
-	Wallet Wallet
-	Tokens []Web3Token
+	Wallet            Wallet
+	Tokens            []Web3Token
+	Activities        []brokerage.Activity
+	ActivitiesFetched bool
 }
 
 func (c *Web3Client) fetchWallet(ctx context.Context, w Wallet) ([]Web3Token, error) {
+	if len(w.Chains) == 0 {
+		// Discovery probe or empty resolution: one unrestricted request.
+		return c.fetchBalanceBatch(ctx, w)
+	}
+	var all []Web3Token
+	for chains := range slices.Chunk(w.Chains, 50) {
+		batch := w
+		batch.Chains = chains
+		tokens, err := c.fetchBalanceBatch(ctx, batch)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, tokens...)
+	}
+	return all, nil
+}
+
+func (c *Web3Client) fetchBalanceBatch(ctx context.Context, w Wallet) ([]Web3Token, error) {
 	type tokenRow struct {
 		Symbol       string `json:"symbol"`
-		TokenAddress string `json:"tokenAddress"`
+		TokenAddress string `json:"tokenContractAddress"`
 		ChainIndex   string `json:"chainIndex"`
 		Balance      string `json:"balance"`
 		TokenPrice   string `json:"tokenPrice"`
@@ -513,11 +607,11 @@ func (c *Web3Client) fetchWallet(ctx context.Context, w Wallet) ([]Web3Token, er
 	if len(w.Chains) > 0 {
 		q.Set("chains", strings.Join(w.Chains, ","))
 	}
-	q.Set("filter", "0") // 0 = include everything (1 hides spam tokens)
+	q.Set("excludeRiskToken", "0") // documented v6 value: filter risky tokens
 	var env envelope
 	if err := signedRequest(
 		ctx, c.http, c.baseURL,
-		http.MethodGet, "/api/v5/dex/balance/all-token-balances-by-address",
+		http.MethodGet, "/api/v6/dex/balance/all-token-balances-by-address",
 		q, nil, c.creds, &env,
 	); err != nil {
 		return nil, err
@@ -528,17 +622,26 @@ func (c *Web3Client) fetchWallet(ctx context.Context, w Wallet) ([]Web3Token, er
 	out := make([]Web3Token, 0)
 	for _, g := range env.Data {
 		for _, t := range g.TokenAssets {
-			if t.IsRiskToken {
+			if t.IsRiskToken || !slices.Contains(w.Chains, t.ChainIndex) {
 				continue
 			}
-			qty := atof(t.Balance)
-			price := atof(t.TokenPrice)
+			qty, err := finiteAmount(t.Balance)
+			if err != nil {
+				return nil, fmt.Errorf("okx_web3 balance %s: %w", t.ChainIndex, err)
+			}
+			var price float64
+			if t.TokenPrice != "" {
+				price, err = finiteAmount(t.TokenPrice)
+				if err != nil {
+					return nil, fmt.Errorf("okx_web3 token price %s: %w", t.ChainIndex, err)
+				}
+			}
 			if qty == 0 {
 				continue
 			}
 			out = append(
 				out, Web3Token{
-					Symbol:     strings.ToUpper(t.Symbol),
+					Symbol:     cexcommon.NormalizeAsset(t.Symbol),
 					TokenAddr:  t.TokenAddress,
 					ChainIndex: t.ChainIndex,
 					Quantity:   qty,
@@ -596,10 +699,11 @@ func TranslateWeb3(wallets []Web3WalletData) domainsync.BrokerSnapshot {
 						Exchange:    brokerage.Exchange{Code: chainName(t.ChainIndex), Name: chainName(t.ChainIndex)},
 						Currency:    brokerage.Currency{Code: "USD"},
 					},
-					Units:                t.Quantity,
-					Price:                t.PriceUSD,
-					AveragePurchasePrice: t.PriceUSD,
-					Currency:             brokerage.Currency{Code: "USD"},
+					Units: t.Quantity,
+					Price: t.PriceUSD,
+					// Basis unknown from balances alone; never stamp the
+					// market price as cost basis.
+					Currency: brokerage.Currency{Code: "USD"},
 				},
 			)
 		}
@@ -624,6 +728,10 @@ func TranslateWeb3(wallets []Web3WalletData) domainsync.BrokerSnapshot {
 			LastHoldingsSync:       &now,
 			InitialHoldingsDone:    true,
 		}
+		if w.ActivitiesFetched {
+			acc.InitialTxSyncDone = true
+			acc.LastTxSync = &now
+		}
 		accounts = append(accounts, acc)
 		holdings = append(
 			holdings, brokerage.Holdings{
@@ -636,12 +744,27 @@ func TranslateWeb3(wallets []Web3WalletData) domainsync.BrokerSnapshot {
 			},
 		)
 	}
+	activities := make(map[string][]brokerage.Activity)
+	for _, w := range wallets {
+		if len(w.Activities) > 0 {
+			activities[walletAccountID(w.Wallet.Address)] = w.Activities
+		}
+	}
 	return domainsync.BrokerSnapshot{
 		Connection: connection,
 		Accounts:   accounts,
 		Holdings:   holdings,
-		Activities: map[string][]brokerage.Activity{},
+		Activities: activities,
 	}
+}
+
+func hasUnsupportedChain(chains []string) bool {
+	for _, chain := range chains {
+		if unsupportedWalletChains[chain] {
+			return true
+		}
+	}
+	return false
 }
 
 // chainName maps OKX chainIndex → human-friendly exchange code.

@@ -41,9 +41,20 @@ type ActivityPO struct {
 	OptionType  string `gorm:"column:option_type;type:text;not null;default:''"`
 	Description string `gorm:"column:description;type:text;not null;default:''"`
 
+	// Option contract identity: without these columns an option leg
+	// round-trips back with a nil OptionSymbol and distinct series
+	// collapse downstream.
+	OptionTicker     string     `gorm:"column:option_ticker;type:text;not null;default:''"`
+	OptionSide       string     `gorm:"column:option_side;type:text;not null;default:''"`
+	OptionStrike     float64    `gorm:"column:option_strike;not null;default:0"`
+	OptionExpiry     *time.Time `gorm:"column:option_expiry"`
+	OptionIsMini     bool       `gorm:"column:option_is_mini;not null;default:false"`
+	OptionUnderlying string     `gorm:"column:option_underlying;type:text;not null;default:''"`
+
 	TradeDate      time.Time  `gorm:"column:trade_date;not null;index:activities_account_idx,priority:2,sort:desc"`
 	SettlementDate *time.Time `gorm:"column:settlement_date"`
 	Fee            float64    `gorm:"column:fee;not null;default:0"`
+	FeeAsset       string     `gorm:"column:fee_asset;type:text;not null;default:''"`
 	FxRate         *float64   `gorm:"column:fx_rate"`
 
 	Institution         string `gorm:"column:institution;type:text;not null;default:''"`
@@ -52,6 +63,7 @@ type ActivityPO struct {
 	SourceSystem        string `gorm:"column:source_system;type:text;not null;default:'CUSTOM'"`
 	SourceGroupID       string `gorm:"column:source_group_id;type:text;not null;default:''"`
 	NeedsReview         bool   `gorm:"column:needs_review;not null;default:false"`
+	IsExternal          bool   `gorm:"column:is_external;not null;default:false"`
 }
 
 // TableName pins the GORM-derived table name.
@@ -74,6 +86,7 @@ func (p ActivityPO) ToDomain() brokerage.Activity {
 		TradeDate:           p.TradeDate,
 		SettlementDate:      p.SettlementDate,
 		Fee:                 p.Fee,
+		FeeAsset:            p.FeeAsset,
 		FxRate:              p.FxRate,
 		Institution:         p.Institution,
 		ExternalReferenceID: p.ExternalReferenceID,
@@ -82,6 +95,7 @@ func (p ActivityPO) ToDomain() brokerage.Activity {
 		SourceRecordID:      p.SourceRecordID,
 		SourceGroupID:       p.SourceGroupID,
 		NeedsReview:         p.NeedsReview,
+		IsExternal:          p.IsExternal,
 	}
 	if p.SymbolTicker != "" || p.SymbolRaw != "" {
 		a.Symbol = &brokerage.Symbol{
@@ -104,7 +118,38 @@ func (p ActivityPO) ToDomain() brokerage.Activity {
 			FIGICode: p.SymbolFIGI,
 		}
 	}
+	if p.OptionTicker != "" {
+		a.OptionSymbol = &brokerage.OptionSymbol{
+			Ticker:         p.OptionTicker,
+			OptionType:     brokerage.OptionSide(p.OptionSide),
+			StrikePrice:    p.OptionStrike,
+			ExpirationDate: orZeroTime(p.OptionExpiry),
+			IsMiniOption:   p.OptionIsMini,
+			Underlying: brokerage.Symbol{
+				Symbol:    p.OptionUnderlying,
+				RawSymbol: p.OptionUnderlying,
+			},
+		}
+	}
 	return a
+}
+
+// orZeroTime dereferences a nullable timestamp, yielding the zero time
+// when NULL (unknown expiry, never today).
+func orZeroTime(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+// nullableTime stores a timestamp, or NULL when zero (unknown expiry).
+func nullableTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	c := t
+	return &c
 }
 
 // activityFromDomain converts a domain Activity into a PO ready for upsert.
@@ -113,6 +158,10 @@ func activityFromDomain(accountID string, a brokerage.Activity) ActivityPO {
 	var s brokerage.Symbol
 	if a.Symbol != nil {
 		s = *a.Symbol
+	}
+	var opt brokerage.OptionSymbol
+	if a.OptionSymbol != nil {
+		opt = *a.OptionSymbol
 	}
 	if a.ProviderType == "" {
 		a.ProviderType = "CUSTOM"
@@ -147,9 +196,16 @@ func activityFromDomain(accountID string, a brokerage.Activity) ActivityPO {
 		RawType:              a.RawType,
 		OptionType:           a.OptionType,
 		Description:          a.Description,
+		OptionTicker:         opt.Ticker,
+		OptionSide:           string(opt.OptionType),
+		OptionStrike:         opt.StrikePrice,
+		OptionExpiry:         nullableTime(opt.ExpirationDate),
+		OptionIsMini:         opt.IsMiniOption,
+		OptionUnderlying:     opt.Underlying.Symbol,
 		TradeDate:            a.TradeDate,
 		SettlementDate:       a.SettlementDate,
 		Fee:                  a.Fee,
+		FeeAsset:             a.FeeAsset,
 		FxRate:               a.FxRate,
 		Institution:          a.Institution,
 		ExternalReferenceID:  a.ExternalReferenceID,
@@ -157,5 +213,6 @@ func activityFromDomain(accountID string, a brokerage.Activity) ActivityPO {
 		SourceSystem:         a.SourceSystem,
 		SourceGroupID:        a.SourceGroupID,
 		NeedsReview:          a.NeedsReview,
+		IsExternal:           a.IsExternal,
 	}
 }

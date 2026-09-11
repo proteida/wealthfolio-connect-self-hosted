@@ -146,9 +146,14 @@ const (
 
 // Activity is one line of trade history.
 type Activity struct {
-	ID                  string
-	AccountID           string
-	Symbol              *Symbol
+	ID        string
+	AccountID string
+	Symbol    *Symbol
+	// IsExternal marks transfers crossing the tracked-account boundary
+	// (counterparty is none of our wallets). The app persists it as
+	// metadata.flow.is_external; tracked-counterparty legs send explicit
+	// false so the app validates them as internal pairs.
+	IsExternal          bool
 	OptionSymbol        *OptionSymbol
 	Price               float64
 	Units               float64
@@ -162,6 +167,7 @@ type Activity struct {
 	TradeDate           time.Time
 	SettlementDate      *time.Time
 	Fee                 float64
+	FeeAsset            string
 	FxRate              *float64
 	Institution         string
 	ExternalReferenceID string
@@ -174,10 +180,12 @@ type Activity struct {
 
 // Position is one current holding line.
 type Position struct {
-	Symbol               Symbol
-	Units                float64
-	Price                float64
-	OpenPnL              float64
+	Symbol  Symbol
+	Units   float64
+	Price   float64
+	OpenPnL float64
+	// AveragePurchasePrice is the remaining-position cost basis. Zero means
+	// unknown — never substitute the current market price.
 	AveragePurchasePrice float64
 	Currency             Currency
 	CashEquivalent       bool
@@ -206,4 +214,8 @@ type Holdings struct {
 	Positions       []Position
 	OptionPositions []OptionPosition
 	CapturedAt      time.Time
+	// Partial marks a snapshot with a failed upstream component (prices,
+	// positions, one of several account legs). Partial snapshots must never
+	// replace the last complete one; unknown value is not zero value.
+	Partial bool
 }
