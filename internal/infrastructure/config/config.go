@@ -117,6 +117,11 @@ type Config struct {
 	// Sync
 	SyncInterval time.Duration
 
+	// RedisAddr is the optional Redis address (host:port) for short-lived
+	// market data (latest prices, today's candles). Empty disables Redis;
+	// durable history always lives in the main database.
+	RedisAddr string
+
 	// Upstream brokers (direct connections, no bridge)
 	Futu FutuConfig
 	IBKR IBKRConfig
@@ -215,6 +220,9 @@ func LoadFrom(get Loader) (*Config, error) {
 		return nil, err
 	}
 	cfg.SyncInterval = time.Duration(syncMin) * time.Minute
+
+	// Redis is optional: empty keeps current-price caching disabled.
+	cfg.RedisAddr = strings.TrimSpace(getString(get, "REDIS_ADDR", ""))
 
 	// Futu OpenD
 	futuPort, err := getInt(get, "FUTU_PORT", 11111)

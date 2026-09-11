@@ -14,6 +14,18 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Ephemeral cache only (latest prices, today's candles): no persistence,
+    # eviction handles capacity. Durable history lives in Postgres.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   connect:
     build:
         context: .
@@ -22,6 +34,8 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
     # Local-only by default.
@@ -83,6 +97,10 @@ services:
       # TON Center API v3 (native TON + Jetton balances and history)
       TONCENTER_API_KEY: ${TONCENTER_API_KEY:-}
       TON_WALLETS: ${TON_WALLETS:-}
+
+      # Redis (optional short-lived market data: latest prices, today's candles)
+      # Empty keeps Redis caching disabled; durable history always uses Postgres.
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
 
 volumes:
   wealthfolio_connect_postgres:

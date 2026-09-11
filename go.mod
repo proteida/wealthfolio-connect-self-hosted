@@ -5,12 +5,14 @@ go 1.26
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/adshao/go-binance/v2 v2.8.11
+	github.com/alicebob/miniredis/v2 v2.39.0
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/go-chi/cors v1.2.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/onsi/ginkgo/v2 v2.29.0
 	github.com/onsi/gomega v1.41.0
+	github.com/redis/go-redis/v9 v9.22.0
 	github.com/rs/zerolog v1.35.1
 	github.com/santsai/futu-go v0.0.0-20260426070808-fb478d2ee3cc
 	github.com/scmhub/ibapi v0.10.46
@@ -23,6 +25,7 @@ require (
 require (
 	github.com/Masterminds/semver/v3 v3.5.0 // indirect
 	github.com/bitly/go-simplejson v0.5.0 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
@@ -40,6 +43,8 @@ require (
 	github.com/robaho/fixed v0.0.0-20251201003256-beee5759f86a // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
+	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/dig v1.19.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect

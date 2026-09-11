@@ -8,11 +8,12 @@
 // Each PO lives in its own file (one aggregate ↔ one model file):
 //
 //	connection_model.go  → ConnectionPO
-//	account_model.go     → AccountPO
-//	activity_model.go    → ActivityPO
-//	holdings_model.go    → HoldingsSnapshotPO
-//	token_model.go       → TokenPO
-//	cursor_model.go      → SyncStatePO
+//	account_model.go      → AccountPO
+//	activity_model.go     → ActivityPO
+//	holdings_model.go     → HoldingsSnapshotPO
+//	token_model.go        → TokenPO
+//	cursor_model.go       → SyncStatePO
+//	pricehistory_model.go → HistoricalPricePO
 //
 // This file only owns the Migrator registry and JSON helpers shared across
 // PO files.
@@ -33,6 +34,7 @@ func (Migrator) Models() []any {
 		&HoldingsSnapshotPO{},
 		&TokenPO{},
 		&SyncStatePO{},
+		&HistoricalPricePO{},
 	}
 }
 

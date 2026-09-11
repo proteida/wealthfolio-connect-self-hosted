@@ -96,3 +96,46 @@ type TokenMetadata struct {
 type TokenRepository interface {
 	Insert(ctx context.Context, t TokenMetadata) error
 }
+
+// HistoricalPrice is one market quote stored without expiration: asset and
+// currency are upper-cased codes ("BTC", "USD"), Timestamp is the provider
+// quote time, Source names the provider ("tonapi", "coingecko", "binance"),
+// and UpdatedAt records when the row was last written. Rows are updateable
+// because providers may later correct data.
+type HistoricalPrice struct {
+	Asset     string
+	Timestamp time.Time
+	Currency  string
+	Price     float64
+	Source    string
+	UpdatedAt time.Time
+}
+
+// PriceHistoryRepository is the durable store for historical market prices
+// and finalized daily candles. Records never expire.
+type PriceHistoryRepository interface {
+	// Get returns the latest stored quote at or before at, or ErrNotFound.
+	Get(ctx context.Context, asset, currency string, at time.Time) (HistoricalPrice, error)
+	// List returns stored quotes in [from, to], oldest first.
+	List(ctx context.Context, asset, currency string, from, to time.Time) ([]HistoricalPrice, error)
+	// Upsert inserts quotes, overwriting any row with the same
+	// (asset, timestamp, currency, source) so provider corrections land.
+	Upsert(ctx context.Context, prices []HistoricalPrice) error
+}
+
+// CurrentPriceCache is the short-lived store for latest prices and today's
+// incomplete daily candles. Implementations expire entries (about an hour
+// for current prices, end of day for candles) and fail open: cache errors
+// must never block a provider fetch.
+type CurrentPriceCache interface {
+	// Get returns the cached price, or found=false on a miss or error.
+	Get(ctx context.Context, key string) (price float64, found bool, err error)
+	// Set stores a price for ttl.
+	Set(ctx context.Context, key string, price float64, ttl time.Duration) error
+	// GetRaw returns a cached blob (e.g. a JSON-encoded daily candle).
+	GetRaw(ctx context.Context, key string) (raw []byte, found bool, err error)
+	// SetRaw stores a blob for ttl.
+	SetRaw(ctx context.Context, key string, raw []byte, ttl time.Duration) error
+	// Delete drops a key, e.g. after a daily candle is finalized.
+	Delete(ctx context.Context, key string) error
+}

@@ -140,6 +140,7 @@ var _ = Describe("Config.LoadFrom", func() {
 				"BITGET_PASSPHRASE":     "bgpp",
 				"HYPERLIQUID_WALLET":    "0xabc",
 				"OKX_WEB3_API_KEY":      "wk",
+				"REDIS_ADDR":            "redis:6379",
 			})
 			cfg, err := config.LoadFrom(mapLoader(env))
 			Expect(err).NotTo(HaveOccurred())
@@ -149,6 +150,7 @@ var _ = Describe("Config.LoadFrom", func() {
 			Expect(cfg.StaticTokenMode).To(BeTrue())
 			Expect(cfg.TokenTTL).To(Equal(60 * time.Second))
 			Expect(cfg.SyncInterval).To(Equal(5 * time.Minute))
+			Expect(cfg.RedisAddr).To(Equal("redis:6379"))
 			Expect(cfg.Futu.Host).To(Equal("opend.local"))
 			Expect(cfg.Futu.Port).To(Equal(11112))
 			Expect(cfg.Futu.TradePassword).To(Equal("hunter2"))

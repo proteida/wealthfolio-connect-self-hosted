@@ -351,6 +351,7 @@ token at all. Everything stays marked for review.
 | ------------------ | --------------------------------------------------------------------------------------------------------------- |
 | `TONCENTER_API_KEY` | TON Center API key, sent as `X-API-Key` (server-side only). Empty falls back to the 1 RPS anonymous quota. |
 | `TON_WALLETS`       | Comma-separated TON addresses in any form (e.g. `UQ…` or `0:…`). Case is preserved — TON addresses are case-sensitive. |
+| `REDIS_ADDR`        | Optional `host:port` for short-lived market data (latest prices ~1h TTL, today's candles). Empty disables Redis; durable price history always uses Postgres. |
 
 ---
 
