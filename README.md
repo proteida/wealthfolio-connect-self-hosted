@@ -353,6 +353,21 @@ token at all. Everything stays marked for review.
 | `TONCENTER_API_KEY` | TON Center API key, sent as `X-API-Key` (server-side only). Empty falls back to the 1 RPS anonymous quota. |
 | `TON_WALLETS`       | Comma-separated TON addresses in any form (e.g. `UQ…` or `0:…`). Case is preserved — TON addresses are case-sensitive. |
 
+### Steam CS2 inventory (Community + Web API, no third parties)
+
+Tracks CS2 items as collectibles with acquisition provenance. Public
+inventory and market prices need nothing; private inventory/market history
+needs a session, trade history a Web API key. Session cookies and the API
+key stay in the environment only — never logged, persisted or committed.
+
+| Name                      | Default | Description                                                                                 |
+| ------------------------- | ------- | ------------------------------------------------------------------------------------------- |
+| `STEAM_ID`                | —       | steamid64 to track. Empty disables the integration.                                         |
+| `STEAM_API_KEY`           | —       | Steam Web API key (trade history only).                                                     |
+| `STEAM_SESSION`           | —       | Raw `Cookie` header for private inventory/market history. Empty limits to public endpoints. |
+| `STEAM_PRICE_TTL_MINUTES` | `20`    | Current market-price cache TTL.                                                             |
+| `STEAM_CURRENCY`          | `1`     | Steam wallet currency code for market prices (`1` = USD).                                   |
+
 ---
 
 ## API Endpoints

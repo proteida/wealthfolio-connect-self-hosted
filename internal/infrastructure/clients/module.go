@@ -21,6 +21,7 @@ import (
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/hyperliquid"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/ibkr"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/okx"
+	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/steam"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/ton"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/config"
 )
@@ -129,6 +130,27 @@ func NewTON(cfg *config.Config, log zerolog.Logger, cursors repository.CursorRep
 	return c
 }
 
+// NewSteam builds the Steam CS2 inventory BrokerClient.
+func NewSteam(cfg *config.Config, log zerolog.Logger, history repository.ActivityRepository, cursors repository.CursorRepository, prices *appprices.Service, store repository.SteamAssetRepository) *steam.Client {
+	c := steam.New(steam.ClientConfig{
+		SteamID:  cfg.Steam.SteamID,
+		APIKey:   cfg.Steam.APIKey,
+		Session:  cfg.Steam.Session,
+		PriceTTL: cfg.Steam.PriceTTL,
+		Currency: cfg.Steam.Currency,
+	}, nil)
+	c.SetLogger(log.With().Str("client", "steam").Logger())
+	c.ConfigureHistory(history)
+	c.ConfigureCursors(cursors)
+	if prices != nil {
+		c.SetPriceService(prices)
+	}
+	if store != nil {
+		c.SetSteamStore(store)
+	}
+	return c
+}
+
 // CryptoClients is the flattened fx group of configured crypto integrations.
 type CryptoClients struct {
 	fx.Out
@@ -137,7 +159,7 @@ type CryptoClients struct {
 
 // NewCryptoClients registers only integrations whose required settings exist.
 // Partial credentials produce one startup warning, never recurring API calls.
-func NewCryptoClients(cfg *config.Config, log zerolog.Logger, history repository.ActivityRepository, cursors repository.CursorRepository, priceHistory repository.PriceHistoryRepository, prices *appprices.Service) CryptoClients {
+func NewCryptoClients(cfg *config.Config, log zerolog.Logger, history repository.ActivityRepository, cursors repository.CursorRepository, priceHistory repository.PriceHistoryRepository, prices *appprices.Service, steamStore repository.SteamAssetRepository) CryptoClients {
 	out := CryptoClients{}
 	enabled := func(name string, fields ...string) bool {
 		count := 0
@@ -174,6 +196,12 @@ func NewCryptoClients(cfg *config.Config, log zerolog.Logger, history repository
 			log.Warn().Msg("ton enabled without TONCENTER_API_KEY: 1 RPS anonymous quota applies")
 		}
 		out.Clients = append(out.Clients, NewTON(cfg, log, cursors, history, priceHistory))
+	}
+	if strings.TrimSpace(cfg.Steam.SteamID) != "" {
+		if strings.TrimSpace(cfg.Steam.Session) == "" {
+			log.Warn().Msg("steam enabled without STEAM_SESSION: only public inventory and prices are available")
+		}
+		out.Clients = append(out.Clients, NewSteam(cfg, log, history, cursors, prices, steamStore))
 	}
 	return out
 }

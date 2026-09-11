@@ -14,6 +14,8 @@
 //	token_model.go        → TokenPO
 //	cursor_model.go       → SyncStatePO
 //	pricehistory_model.go → HistoricalPricePO
+//	steam_model.go        → Steam*PO (snapshots, events, market, trades,
+//	                          lots, acquisitions)
 //
 // This file only owns the Migrator registry and JSON helpers shared across
 // PO files.
@@ -35,6 +37,13 @@ func (Migrator) Models() []any {
 		&TokenPO{},
 		&SyncStatePO{},
 		&HistoricalPricePO{},
+		&SteamSnapshotPO{},
+		&SteamSnapshotAssetPO{},
+		&SteamEventPO{},
+		&SteamMarketTxPO{},
+		&SteamTradePO{},
+		&SteamLotPO{},
+		&SteamAcquisitionPO{},
 	}
 }
 

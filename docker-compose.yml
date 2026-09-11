@@ -102,5 +102,12 @@ services:
       TONCENTER_API_KEY: ${TONCENTER_API_KEY:-}
       TON_WALLETS: ${TON_WALLETS:-}
 
+      # Steam CS2 inventory (empty STEAM_ID disables; session stays in env only)
+      STEAM_ID: ${STEAM_ID:-}
+      STEAM_API_KEY: ${STEAM_API_KEY:-}
+      STEAM_SESSION: ${STEAM_SESSION:-}
+      STEAM_PRICE_TTL_MINUTES: ${STEAM_PRICE_TTL_MINUTES:-20}
+      STEAM_CURRENCY: ${STEAM_CURRENCY:-1}
+
 volumes:
   wealthfolio_connect_postgres:
