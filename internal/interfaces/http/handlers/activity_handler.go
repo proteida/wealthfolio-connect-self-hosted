@@ -89,6 +89,7 @@ type activityDTO struct {
 	TradeDate           time.Time        `json:"trade_date"`
 	SettlementDate      *time.Time       `json:"settlement_date"`
 	Fee                 float64          `json:"fee"`
+	FeeAsset            string           `json:"fee_asset,omitempty"`
 	FxRate              *float64         `json:"fx_rate"`
 	Institution         string           `json:"institution,omitempty"`
 	ExternalReferenceID string           `json:"external_reference_id,omitempty"`
@@ -153,6 +154,7 @@ func toActivityDTO(a brokerage.Activity) activityDTO {
 		TradeDate:           a.TradeDate,
 		SettlementDate:      a.SettlementDate,
 		Fee:                 a.Fee,
+		FeeAsset:            a.FeeAsset,
 		FxRate:              a.FxRate,
 		Institution:         a.Institution,
 		ExternalReferenceID: a.ExternalReferenceID,

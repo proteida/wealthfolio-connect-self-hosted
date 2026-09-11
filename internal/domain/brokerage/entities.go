@@ -162,6 +162,7 @@ type Activity struct {
 	TradeDate           time.Time
 	SettlementDate      *time.Time
 	Fee                 float64
+	FeeAsset            string
 	FxRate              *float64
 	Institution         string
 	ExternalReferenceID string

@@ -44,6 +44,7 @@ type ActivityPO struct {
 	TradeDate      time.Time  `gorm:"column:trade_date;not null;index:activities_account_idx,priority:2,sort:desc"`
 	SettlementDate *time.Time `gorm:"column:settlement_date"`
 	Fee            float64    `gorm:"column:fee;not null;default:0"`
+	FeeAsset       string     `gorm:"column:fee_asset;type:text;not null;default:''"`
 	FxRate         *float64   `gorm:"column:fx_rate"`
 
 	Institution         string `gorm:"column:institution;type:text;not null;default:''"`
@@ -74,6 +75,7 @@ func (p ActivityPO) ToDomain() brokerage.Activity {
 		TradeDate:           p.TradeDate,
 		SettlementDate:      p.SettlementDate,
 		Fee:                 p.Fee,
+		FeeAsset:            p.FeeAsset,
 		FxRate:              p.FxRate,
 		Institution:         p.Institution,
 		ExternalReferenceID: p.ExternalReferenceID,
@@ -150,6 +152,7 @@ func activityFromDomain(accountID string, a brokerage.Activity) ActivityPO {
 		TradeDate:            a.TradeDate,
 		SettlementDate:       a.SettlementDate,
 		Fee:                  a.Fee,
+		FeeAsset:             a.FeeAsset,
 		FxRate:               a.FxRate,
 		Institution:          a.Institution,
 		ExternalReferenceID:  a.ExternalReferenceID,
