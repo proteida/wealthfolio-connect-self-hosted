@@ -27,3 +27,10 @@ type BrokerClient interface {
 	// with other clients but does not need to be reentrant for itself.
 	Fetch(ctx context.Context) (BrokerSnapshot, error)
 }
+
+// SnapshotCommitter is an optional acknowledgement for clients with incremental
+// progress. Called only after all data and sync status in a snapshot are saved.
+// Failed persistence must leave client progress unchanged so retries replay data.
+type SnapshotCommitter interface {
+	SnapshotCommitted()
+}

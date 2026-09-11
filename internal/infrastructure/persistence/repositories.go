@@ -27,6 +27,7 @@ var Module = fx.Module("persistence",
 		fx.Annotate(NewActivityRepository, fx.As(new(repository.ActivityRepository))),
 		fx.Annotate(NewHoldingRepository, fx.As(new(repository.HoldingRepository))),
 		fx.Annotate(NewTokenRepository, fx.As(new(repository.TokenRepository))),
+		fx.Annotate(NewCursorRepository, fx.As(new(repository.CursorRepository))),
 	),
 )
 
