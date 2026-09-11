@@ -68,6 +68,100 @@ var _ = Describe("Translate", func() {
 	})
 })
 
+var _ = Describe("Translate fee normalization", func() {
+	tradeActs := func(trades []cexcommon.Trade, feePrice func(string, time.Time) float64) []struct {
+		Fee      float64
+		FeeAsset string
+	} {
+		snap := cexcommon.Translate("test", "Test", cexcommon.Snapshot{
+			Trades:   trades,
+			FeePrice: feePrice,
+		})
+		acts := snap.Activities["test-spot"]
+		out := make([]struct {
+			Fee      float64
+			FeeAsset string
+		}, len(acts))
+		for i, a := range acts {
+			out[i].Fee = a.Fee
+			out[i].FeeAsset = a.FeeAsset
+		}
+		return out
+	}
+
+	It("passes USD fees through unchanged", func() {
+		got := tradeActs([]cexcommon.Trade{
+			{ID: "t1", Symbol: "BTC-USDT", Side: "buy", Price: 60000, Quantity: 0.1, Fee: 5, FeeAsset: "USD", Timestamp: time.Now()},
+		}, nil)
+		Expect(got[0].Fee).To(Equal(5.0))
+		Expect(got[0].FeeAsset).To(Equal("USD"))
+	})
+
+	It("passes USD-pegged stablecoin fees through 1:1", func() {
+		got := tradeActs([]cexcommon.Trade{
+			{ID: "t1", Symbol: "BTC-USDT", Side: "buy", Price: 60000, Quantity: 0.1, Fee: 5, FeeAsset: "USDT", Timestamp: time.Now()},
+		}, nil)
+		Expect(got[0].Fee).To(Equal(5.0))
+		Expect(got[0].FeeAsset).To(Equal("USD"))
+	})
+
+	It("reuses the trade price when the fee is paid in the traded asset", func() {
+		got := tradeActs([]cexcommon.Trade{
+			{ID: "t1", Symbol: "BTC-USDT", Side: "buy", Price: 60000, Quantity: 0.1, Fee: 0.0001, FeeAsset: "BTC", Timestamp: time.Now()},
+		}, nil)
+		Expect(got[0].Fee).To(BeNumerically("~", 6.0, 1e-9))
+		Expect(got[0].FeeAsset).To(Equal("USD"))
+	})
+
+	It("parses concatenated pair symbols when matching the fee asset", func() {
+		got := tradeActs([]cexcommon.Trade{
+			{ID: "t1", Symbol: "BTCUSDT", Side: "buy", Price: 60000, Quantity: 0.1, Fee: 0.0001, FeeAsset: "btc", Timestamp: time.Now()},
+		}, nil)
+		Expect(got[0].Fee).To(BeNumerically("~", 6.0, 1e-9))
+		Expect(got[0].FeeAsset).To(Equal("USD"))
+	})
+
+	It("zeroes same-asset fees without a timestamp", func() {
+		got := tradeActs([]cexcommon.Trade{
+			{ID: "t1", Symbol: "BTC-USDT", Side: "buy", Price: 60000, Quantity: 0.1, Fee: 0.0001, FeeAsset: "BTC"},
+		}, nil)
+		Expect(got[0].Fee).To(Equal(0.0))
+		Expect(got[0].FeeAsset).To(Equal("USD"))
+	})
+
+	It("prices differing fee assets via the hook and zeroes them when unavailable", func() {
+		hook := func(asset string, at time.Time) float64 {
+			if asset == "BNB" {
+				return 600
+			}
+			return 0
+		}
+		got := tradeActs([]cexcommon.Trade{
+			{ID: "t1", Symbol: "BTC-USDT", Side: "buy", Price: 60000, Quantity: 0.1, Fee: 0.01, FeeAsset: "BNB", Timestamp: time.Now()},
+			{ID: "t2", Symbol: "BTC-USDT", Side: "buy", Price: 60000, Quantity: 0.1, Fee: 0.01, FeeAsset: "CAKE", Timestamp: time.Now()},
+		}, hook)
+		Expect(got[0].Fee).To(BeNumerically("~", 6.0, 1e-9))
+		Expect(got[0].FeeAsset).To(Equal("USD"))
+		Expect(got[1].Fee).To(Equal(0.0))
+		Expect(got[1].FeeAsset).To(Equal("USD"))
+	})
+
+	It("zeroes differing fee assets without a price hook", func() {
+		got := tradeActs([]cexcommon.Trade{
+			{ID: "t1", Symbol: "BTC-USDT", Side: "buy", Price: 60000, Quantity: 0.1, Fee: 0.01, FeeAsset: "BNB", Timestamp: time.Now()},
+		}, nil)
+		Expect(got[0].Fee).To(Equal(0.0))
+		Expect(got[0].FeeAsset).To(Equal("USD"))
+	})
+
+	It("preserves the previous assume-USD behaviour for unknown denominations", func() {
+		got := tradeActs([]cexcommon.Trade{
+			{ID: "t1", Symbol: "BTC-USDT", Side: "buy", Price: 60000, Quantity: 0.1, Fee: 5, Timestamp: time.Now()},
+		}, nil)
+		Expect(got[0].Fee).To(Equal(5.0))
+		Expect(got[0].FeeAsset).To(Equal("USD"))
+	})
+})
 var _ = Describe("IsStablecoin", func() {
 	It("recognizes common USD-pegged coins regardless of case", func() {
 		Expect(cexcommon.IsStablecoin("USDT")).To(BeTrue())
