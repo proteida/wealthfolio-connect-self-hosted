@@ -199,8 +199,8 @@ func NewCryptoClients(cfg *config.Config, log zerolog.Logger, history repository
 		out.Clients = append(out.Clients, NewTON(cfg, log, cursors, history, priceHistory))
 	}
 	if strings.TrimSpace(cfg.Steam.SteamID) != "" {
-		if strings.TrimSpace(cfg.Steam.Session) == "" {
-			log.Warn().Msg("steam enabled without STEAM_SESSION: only public inventory and prices are available")
+		if strings.TrimSpace(cfg.Steam.Session) == "" && strings.TrimSpace(cfg.Steam.RefreshToken) == "" {
+			log.Warn().Msg("steam enabled without STEAM_SESSION or STEAM_REFRESH_TOKEN: only public inventory and prices are available")
 		}
 		out.Clients = append(out.Clients, NewSteam(cfg, log, history, cursors, prices, steamStore))
 	}

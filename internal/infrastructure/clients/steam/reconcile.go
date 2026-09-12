@@ -295,9 +295,20 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 		return domainsync.BrokerSnapshot{}, err
 	}
 	// Provenance is best-effort: inventory alone still yields a snapshot.
-	events, _, _ := c.fetchHistory(ctx, 0)          //nolint:errcheck // partial history stays usable
-	marketTxs, _, _ := c.fetchMarketHistory(ctx)    //nolint:errcheck // partial history stays usable
-	trades, _, _ := c.fetchTrades(ctx, time.Time{}) //nolint:errcheck // partial history stays usable
+	// Failures are logged (paths and status codes only, never secrets) so
+	// a dead session or revoked token is visible instead of silent.
+	events, _, histErr := c.fetchHistory(ctx, 0)
+	marketTxs, _, marketErr := c.fetchMarketHistory(ctx)
+	trades, _, tradeErr := c.fetchTrades(ctx, time.Time{})
+	if histErr != nil {
+		c.log.Warn().Err(histErr).Msg("steam inventory history unavailable; proceeding without provenance")
+	}
+	if marketErr != nil {
+		c.log.Warn().Err(marketErr).Msg("steam market history unavailable; proceeding without cost basis")
+	}
+	if tradeErr != nil {
+		c.log.Warn().Err(tradeErr).Msg("steam trade history unavailable; proceeding without trade evidence")
+	}
 	market := make(map[string]domainsteam.MarketTransaction, len(marketTxs))
 	for _, tx := range marketTxs {
 		market[tx.ExternalID] = tx
