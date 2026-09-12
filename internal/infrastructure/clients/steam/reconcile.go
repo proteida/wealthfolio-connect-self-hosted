@@ -614,8 +614,11 @@ func toPosition(r Resolution, view domainsteam.PricedAsset) brokerage.Position {
 		pnl = *view.UnrealizedPnL
 	}
 	return brokerage.Position{
+		// RawSymbol is the display string by codebase convention (never
+		// the internal master): it carries the title, while
+		// classid/instanceid live in the steam tables and source IDs.
 		Symbol: brokerage.Symbol{
-			Symbol: titleOf(r), RawSymbol: r.Asset.ClassID + "/" + r.Asset.InstanceID,
+			Symbol: titleOf(r), RawSymbol: titleOf(r),
 			Name: titleOf(r), Description: titleOf(r),
 			Type:     brokerage.SymbolType{Code: "COLLECTIBLE", IsSupported: true, Description: "Steam collectible"},
 			Exchange: brokerage.Exchange{Code: "STEAM", Name: "Steam Community Market"},
@@ -638,7 +641,7 @@ func toActivity(r Resolution, view domainsteam.PricedAsset, accountID string, no
 		ID:        "steam:" + r.Asset.AssetID,
 		AccountID: accountID,
 		Symbol: &brokerage.Symbol{
-			Symbol: titleOf(r), RawSymbol: r.Asset.ClassID + "/" + r.Asset.InstanceID,
+			Symbol: titleOf(r), RawSymbol: titleOf(r),
 			Name: titleOf(r), Description: titleOf(r),
 			Type:     brokerage.SymbolType{Code: "COLLECTIBLE", IsSupported: true},
 			Exchange: brokerage.Exchange{Code: "STEAM"},
