@@ -135,6 +135,22 @@ var _ = Describe("Steam auth cookies", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("allowlist"))
 	})
+
+	It("allows every Steam infrastructure host including checkout", func() {
+		c := NewSteamAuthClient("1", "tok", nil, "")
+		for _, u := range []string{
+			"https://steamcommunity.com/x",
+			"https://login.steampowered.com/jwt/finalizelogin",
+			"https://store.steampowered.com/y",
+			"https://help.steampowered.com/y",
+			"https://checkout.steampowered.com/login/settoken",
+		} {
+			Expect(c.allowlisted(u)).To(BeTrue(), u)
+		}
+		Expect(c.allowlisted("https://steampowered.com.evil.example/x")).To(BeFalse())
+		Expect(c.allowlisted("https://evil.example/x")).To(BeFalse())
+		Expect(c.allowlisted("::bad-url::")).To(BeFalse())
+	})
 })
 
 var _ = Describe("Authenticated retry", func() {

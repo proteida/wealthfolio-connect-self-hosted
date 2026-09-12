@@ -57,13 +57,14 @@ const (
 	transferRetryDelay = 500 * time.Millisecond
 )
 
-// steamCookieHosts is the allowlist for authentication-cookie traffic.
-// Cookies and tokens never leave these hosts.
+// steamCookieHosts is the allowlist for authentication-cookie traffic,
+// matched as exact hosts or subdomains (e.g. checkout.steampowered.com,
+// which Steam uses for token transfers). Cookies and tokens never leave
+// Steam infrastructure: anything outside these two registrable domains is
+// refused.
 var steamCookieHosts = []string{
 	"steamcommunity.com",
-	"store.steampowered.com",
-	"help.steampowered.com",
-	"login.steampowered.com",
+	"steampowered.com",
 }
 
 // ErrSteamReauthenticationRequired is returned when Steam clearly rejects
