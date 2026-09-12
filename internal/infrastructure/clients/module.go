@@ -131,7 +131,7 @@ func NewTON(cfg *config.Config, log zerolog.Logger, cursors repository.CursorRep
 }
 
 // NewSteam builds the Steam CS2 inventory BrokerClient.
-func NewSteam(cfg *config.Config, log zerolog.Logger, history repository.ActivityRepository, cursors repository.CursorRepository, prices *appprices.Service, store repository.SteamAssetRepository) *steam.Client {
+func NewSteam(cfg *config.Config, log zerolog.Logger, history repository.ActivityRepository, cursors repository.CursorRepository, prices *appprices.Service, store repository.SteamAssetRepository, priceHistory repository.PriceHistoryRepository) *steam.Client {
 	c := steam.New(steam.ClientConfig{
 		SteamID:         cfg.Steam.SteamID,
 		APIKey:          cfg.Steam.APIKey,
@@ -150,6 +150,9 @@ func NewSteam(cfg *config.Config, log zerolog.Logger, history repository.Activit
 	}
 	if store != nil {
 		c.SetSteamStore(store)
+	}
+	if priceHistory != nil {
+		c.SetPriceHistoryStore(priceHistory)
 	}
 	return c
 }
@@ -204,7 +207,7 @@ func NewCryptoClients(cfg *config.Config, log zerolog.Logger, history repository
 		if strings.TrimSpace(cfg.Steam.Session) == "" && strings.TrimSpace(cfg.Steam.RefreshToken) == "" {
 			log.Warn().Msg("steam enabled without STEAM_SESSION or STEAM_REFRESH_TOKEN: only public inventory and prices are available")
 		}
-		out.Clients = append(out.Clients, NewSteam(cfg, log, history, cursors, prices, steamStore))
+		out.Clients = append(out.Clients, NewSteam(cfg, log, history, cursors, prices, steamStore, priceHistory))
 	}
 	return out
 }

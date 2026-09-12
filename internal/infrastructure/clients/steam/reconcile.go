@@ -354,8 +354,27 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 	positions := make([]brokerage.Position, 0, len(resolved))
 	activities := make([]brokerage.Activity, 0, len(resolved))
 	skipped := 0
+	// One provider call per distinct name: duplicates share the quote.
+	// The shared cache dedupes across syncs; this dedupes within one.
+	priced := map[string]struct {
+		price     float64
+		priceType string
+		ok        bool
+	}{}
+	priceOf := func(name string) (float64, string, bool) {
+		if v, ok := priced[name]; ok {
+			return v.price, v.priceType, v.ok
+		}
+		price, priceType, ok := c.CurrentPrice(ctx, name)
+		priced[name] = struct {
+			price     float64
+			priceType string
+			ok        bool
+		}{price, priceType, ok}
+		return price, priceType, ok
+	}
 	for _, r := range resolved {
-		price, priceType, valued := c.CurrentPrice(ctx, r.Asset.MarketHashName)
+		price, priceType, valued := priceOf(r.Asset.MarketHashName)
 		if c.cfg.MinItemValueUSD > 0 && valued && !before[r.Asset.AssetID] &&
 			float64(r.Asset.Amount)*price < c.cfg.MinItemValueUSD {
 			// New dust stays out of positions and activities (but remains
