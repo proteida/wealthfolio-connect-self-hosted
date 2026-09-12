@@ -62,25 +62,46 @@ func priceKey(marketHashName string, currency int) (asset, curr string) {
 	return PriceAssetKey(marketHashName, currency)
 }
 
-// CurrentPrice returns the median Steam market price (lowest fallback)
-// through the shared current-price cache. Without a price service it
-// fetches directly every call.
+// CurrentPrice returns the median Steam market price (lowest fallback).
+// Resolution order: database recency (a stored point fresher than the TTL
+// answers without any HTTP, which is what makes caching effective across
+// syncs longer than the TTL), then the shared Redis cache, then a live
+// fetch whose quote is UPSERTed for future recency checks.
 func (c *Client) CurrentPrice(ctx context.Context, marketHashName string) (float64, string, bool) {
 	asset, curr := priceKey(marketHashName, c.cfg.Currency)
+	if c.priceHistory != nil && marketHashName != "" {
+		if p, err := c.priceHistory.Get(ctx, asset, curr, time.Now().UTC()); err == nil {
+			if time.Since(p.Timestamp) < c.cfg.PriceTTL {
+				return p.Price, "steam_history", true
+			}
+		}
+	}
 	fetch := func(ctx context.Context) (float64, error) {
 		return c.fetchOverview(ctx, marketHashName)
+	}
+	remember := func(v float64) {
+		if c.priceHistory == nil || marketHashName == "" {
+			return
+		}
+		now := time.Now().UTC()
+		_ = c.priceHistory.Upsert(ctx, []repository.HistoricalPrice{{
+			Asset: asset, Timestamp: now, Currency: curr,
+			Price: v, Source: "steam_market", UpdatedAt: now,
+		}})
 	}
 	if c.prices == nil {
 		v, err := fetch(ctx)
 		if err != nil {
 			return 0, "", false
 		}
+		remember(v)
 		return v, "steam_median", true
 	}
 	v, err := c.prices.GetCurrentWithTTL(ctx, asset, curr, c.cfg.PriceTTL, fetch)
 	if err != nil {
 		return 0, "", false
 	}
+	remember(v)
 	return v, "steam_median", true
 }
 

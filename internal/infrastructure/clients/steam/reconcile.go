@@ -649,6 +649,11 @@ func toActivity(r Resolution, view domainsteam.PricedAsset, accountID string, no
 		act.Amount = act.Price * act.Units
 		if r.CostCurrency != "" {
 			act.Currency = brokerage.Currency{Code: r.CostCurrency}
+			if r.CostCurrency != "USD" {
+				// Cost in another currency than the valuation: P&L
+				// mixes denominations until FX conversion exists.
+				act.NeedsReview = true
+			}
 		}
 	}
 	if r.AcquiredAt != nil {

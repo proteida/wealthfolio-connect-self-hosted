@@ -114,8 +114,21 @@ type stubPriceStore struct {
 
 func newStubPriceStore() *stubPriceStore { return &stubPriceStore{} }
 
-func (s *stubPriceStore) Get(_ context.Context, _, _ string, _ time.Time) (repository.HistoricalPrice, error) {
-	return repository.HistoricalPrice{}, repository.ErrNotFound
+func (s *stubPriceStore) Get(_ context.Context, asset, currency string, at time.Time) (repository.HistoricalPrice, error) {
+	var best *repository.HistoricalPrice
+	for _, r := range s.rows {
+		r := r
+		if r.Asset != asset || r.Currency != currency || r.Timestamp.After(at) {
+			continue
+		}
+		if best == nil || r.Timestamp.After(best.Timestamp) {
+			best = &r
+		}
+	}
+	if best == nil {
+		return repository.HistoricalPrice{}, repository.ErrNotFound
+	}
+	return *best, nil
 }
 func (s *stubPriceStore) List(_ context.Context, _, _ string, _, _ time.Time) ([]repository.HistoricalPrice, error) {
 	return nil, nil
@@ -125,3 +138,50 @@ func (s *stubPriceStore) Upsert(_ context.Context, ps []repository.HistoricalPri
 	s.rows = append(s.rows, ps...)
 	return nil
 }
+
+var _ = Describe("Current price recency", func() {
+	var server *httptest.Server
+	var calls int
+	BeforeEach(func() {
+		calls = 0
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer GinkgoRecover()
+			calls++
+			writeJSON(w, map[string]any{"success": true, "median_price": "$31.28"})
+		}))
+	})
+	AfterEach(func() { server.Close() })
+
+	newClient := func(store *stubPriceStore) *Client {
+		c := testClient(server)
+		c.cfg.CommunityBase = server.URL
+		c.SetPriceHistoryStore(store)
+		return c
+	}
+
+	It("serves fresh stored points without HTTP", func() {
+		store := newStubPriceStore()
+		Expect(store.Upsert(context.Background(), []repository.HistoricalPrice{
+			{Asset: "steam:730:AK", Timestamp: time.Now().UTC().Add(-time.Minute), Currency: "STEAM_1", Price: 30, Source: "steam_market"},
+		})).To(Succeed())
+		v, kind, ok := newClient(store).CurrentPrice(context.Background(), "AK")
+		Expect(ok).To(BeTrue())
+		Expect(kind).To(Equal("steam_history"))
+		Expect(v).To(Equal(30.0))
+		Expect(calls).To(Equal(0))
+	})
+
+	It("refetches and remembers when stored points are stale", func() {
+		store := newStubPriceStore()
+		Expect(store.Upsert(context.Background(), []repository.HistoricalPrice{
+			{Asset: "steam:730:AK", Timestamp: time.Now().UTC().Add(-time.Hour), Currency: "STEAM_1", Price: 30, Source: "steam_market"},
+		})).To(Succeed())
+		c := newClient(store)
+		c.cfg.PriceTTL = time.Minute
+		v, kind, ok := c.CurrentPrice(context.Background(), "AK")
+		Expect(ok).To(BeTrue())
+		Expect(kind).To(Equal("steam_median"))
+		Expect(v).To(BeNumerically("~", 31.28, 1e-9))
+		Expect(calls).To(Equal(1))
+	})
+})
