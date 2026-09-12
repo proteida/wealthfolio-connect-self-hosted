@@ -158,6 +158,7 @@ func (c *Client) ensureAuth(ctx context.Context) error {
 	}
 	auth := NewSteamAuthClient(c.cfg.SteamID, c.cfg.RefreshToken, c.http, "")
 	auth.SetLogger(c.log)
+	auth.SetLogger(c.log)
 	authed, err := auth.AuthenticatedClient(ctx)
 	if err != nil {
 		return err
