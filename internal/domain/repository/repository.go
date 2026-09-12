@@ -161,6 +161,8 @@ type SteamMarketRow struct {
 	Type           string
 	Timestamp      time.Time
 	MarketHashName string
+	ClassID        string
+	InstanceID     string
 	Quantity       int
 	Gross          float64
 	Net            *float64

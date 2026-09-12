@@ -64,6 +64,8 @@ type SteamMarketTxPO struct {
 	Type           string    `gorm:"column:type;type:text;not null;default:''"`
 	Timestamp      time.Time `gorm:"column:ts;not null"`
 	MarketHashName string    `gorm:"column:market_hash_name;type:text;not null;default:''"`
+	ClassID        string    `gorm:"column:classid;type:text;not null;default:''"`
+	InstanceID     string    `gorm:"column:instanceid;type:text;not null;default:''"`
 	Quantity       int       `gorm:"column:quantity;not null;default:1"`
 	Gross          float64   `gorm:"column:gross;not null;default:0"`
 	Net            *float64  `gorm:"column:net"`
@@ -236,6 +238,7 @@ func (r *steamAssetRepo) SaveMarketTransactions(ctx context.Context, steamID str
 		po := SteamMarketTxPO{
 			SteamID: steamID, ExternalID: tx.ExternalID, Type: tx.Type,
 			Timestamp: tx.Timestamp, MarketHashName: tx.MarketHashName,
+			ClassID: tx.ClassID, InstanceID: tx.InstanceID,
 			Quantity: tx.Quantity, Gross: tx.Gross, Net: tx.Net, Currency: tx.Currency,
 		}
 		if err := r.db.WithContext(ctx).Clauses(clause.OnConflict{

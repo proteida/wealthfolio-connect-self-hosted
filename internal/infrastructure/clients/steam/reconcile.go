@@ -297,8 +297,12 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 	// Provenance is best-effort: inventory alone still yields a snapshot.
 	// Failures are logged (paths and status codes only, never secrets) so
 	// a dead session or revoked token is visible instead of silent.
-	events, _, histErr := c.fetchHistory(ctx, 0)
-	marketTxs, _, marketErr := c.fetchMarketHistory(ctx)
+	events, descs, _, histErr := c.fetchHistory(ctx, 0)
+	names := make(map[string]string, len(descs))
+	for k, d := range descs {
+		names[k] = d.MarketHashName
+	}
+	marketTxs, _, marketErr := c.fetchMarketHistory(ctx, c.cfg.SteamID, names)
 	trades, _, tradeErr := c.fetchTrades(ctx, time.Time{})
 	if histErr != nil {
 		c.log.Warn().Err(histErr).Msg("steam inventory history unavailable; proceeding without provenance")

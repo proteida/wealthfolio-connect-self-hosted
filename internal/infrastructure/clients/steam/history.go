@@ -5,14 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// Inventory history event kinds surfaced by the community endpoint. The set
-// is observational (Steam documents nothing here): unknown kinds pass
-// through verbatim and are stored unmatched rather than dropped.
+// Inventory history event kinds. The inventory-history endpoint renders
+// rows as HTML (`div.tradehistoryrow`); kinds below are the observed row
+// verbs, matched by prefix. Anything else passes through verbatim as
+// "other:<verb>" and is stored unmatched rather than dropped.
 const (
 	EventMarketBuy    = "Purchased on Community Market"
 	EventMarketList   = "Listed on Community Market"
@@ -22,10 +24,12 @@ const (
 	EventCrafted      = "Crafted"
 	EventEarned       = "Earned"
 	EventUsed         = "Used"
+	EventUnboxed      = "Unboxed"
 )
 
 // historyCursor is an opaque pagination cursor: its fields are passed back
-// exactly as received, never constructed.
+// exactly as received, never constructed. Observed shape:
+// {"time": 1774720493, "time_frac": 737000000, "s": "30933525991"}.
 type historyCursor struct {
 	Time     any `json:"time"`
 	TimeFrac any `json:"time_frac"`
@@ -34,6 +38,10 @@ type historyCursor struct {
 
 func (c historyCursor) empty() bool {
 	return strVal(c.Time) == "" && strVal(c.TimeFrac) == "" && strVal(c.S) == ""
+}
+
+func (c historyCursor) key() string {
+	return strVal(c.Time) + "|" + strVal(c.TimeFrac) + "|" + strVal(c.S)
 }
 
 func (c historyCursor) values() url.Values {
@@ -62,18 +70,21 @@ type historyEvent struct {
 	InstanceID     string
 }
 
-// historyPage mirrors the ajax inventory-history envelope. Rows arrive in
-// heterogeneous shapes across Steam revisions, so decoding is defensive:
-// known fields are extracted, unknown shapes are kept with what they have
-// rather than failing the page.
+// historyDesc is one description entry (keyed classid_instanceid).
+type historyDesc struct {
+	MarketHashName string
+}
+
+// historyPage mirrors the ajax inventory-history envelope:
+// {success, html, num, descriptions: {appid: {classid_instanceid: {...}}},
+// apps, cursor}. Rows live in html; there is no more-flag, so pagination
+// follows the cursor until rows stop or it stalls.
 type historyPage struct {
-	Success   any               `json:"success"`
-	Events    []json.RawMessage `json:"events"`
-	History   []json.RawMessage `json:"history"`
-	Cursor    json.RawMessage   `json:"cursor"`
-	HasMore   any               `json:"more"`
-	More      any               `json:"has_more"`
-	StartTime any               `json:"start_time"`
+	Success      any                                   `json:"success"`
+	HTML         string                                `json:"html"`
+	Num          int                                   `json:"num"`
+	Descriptions map[string]map[string]json.RawMessage `json:"descriptions"`
+	Cursor       json.RawMessage                       `json:"cursor"`
 	// Keys records the envelope's top-level keys for drift visibility.
 	Keys []string `json:"-"`
 }
@@ -121,57 +132,137 @@ func eventExternalID(kind string, at time.Time, asset, class, instance, name str
 		kind, at.UTC().Unix(), asset, class, instance, name, qty)
 }
 
-func parseHistoryEvent(raw json.RawMessage) historyEvent {
-	var generic map[string]any
-	dec := json.NewDecoder(strings.NewReader(string(raw)))
-	dec.UseNumber()
-	if err := dec.Decode(&generic); err != nil {
-		return historyEvent{ExternalID: fmt.Sprintf("hist:unparsed:%x", rawSnippet(raw))}
-	}
-	str := func(keys ...string) string {
-		for _, k := range keys {
-			if v, ok := generic[k]; ok {
-				if s := strVal(v); s != "" {
-					return s
-				}
-			}
+var (
+	rowSplitHistoryRe = regexp.MustCompile(`<div class="tradehistoryrow"`)
+	rowAttrRe         = regexp.MustCompile(`data-([a-zA-Z0-9_-]+)="([^"]*)"`)
+	// rowTextLead matches "> 3 Aug, 2026 1:36am " at the start of row text.
+	rowDateRe = regexp.MustCompile(`^\s*>?\s*(\d{1,2}\s+\w+,\s+\d{4}\s+\d{1,2}:\d{2}(?:am|pm))`)
+	// rowSplitSign splits "KIND WORDS - ITEM" / "KIND WORDS + ITEM".
+	rowSignRe = regexp.MustCompile(`^(.*?)\s+([+-])\s+(.*)$`)
+)
+
+// normalizeHistoryKind maps observed row verbs to event kinds. Unknown
+// verbs pass through as "other:<verb>" so new Steam phrasing stays visible
+// instead of collapsing into a lie.
+func normalizeHistoryKind(verb string) string {
+	verb = strings.TrimSpace(verb)
+	lower := strings.ToLower(verb)
+	for _, known := range []string{
+		EventMarketBuy, EventMarketList, EventMarketReturn,
+		EventTraded, EventReceived, EventCrafted,
+		EventEarned, EventUsed, EventUnboxed,
+	} {
+		if strings.HasPrefix(lower, strings.ToLower(known)) {
+			return known
 		}
-		return ""
 	}
-	kind := str("event_name", "type", "action", "name")
-	name := str("market_hash_name", "market_name", "item_name")
-	asset := str("assetid", "asset_id", "new_assetid")
-	classID := str("classid", "class_id")
-	instanceID := str("instanceid", "instance_id")
-	qty := intVal(generic["quantity"])
-	if qty == 0 {
-		qty = intVal(generic["amount"])
+	// Short verbs without the full phrasing still map when unambiguous.
+	switch {
+	case strings.HasPrefix(lower, "purchased"):
+		return EventMarketBuy
+	case strings.HasPrefix(lower, "listed"):
+		return EventMarketList
+	case strings.HasPrefix(lower, "traded"):
+		return EventTraded
+	case strings.HasPrefix(lower, "received"):
+		return EventReceived
+	case strings.HasPrefix(lower, "crafted"):
+		return EventCrafted
+	case strings.HasPrefix(lower, "earned"):
+		return EventEarned
+	case strings.HasPrefix(lower, "unboxed"):
+		return EventUnboxed
+	case strings.HasPrefix(lower, "deleted"), strings.HasPrefix(lower, "destroyed"),
+		strings.HasPrefix(lower, "used"), strings.HasPrefix(lower, "consumed"):
+		return EventUsed
 	}
-	if qty == 0 {
-		qty = 1
+	if verb == "" {
+		return "other"
 	}
-	at := parseSteamTime(str("time", "timestamp", "date", "time_created", "created"))
-	ev := historyEvent{
-		Timestamp:      at,
-		Kind:           kind,
-		MarketHashName: name,
-		Quantity:       qty,
-		AssetID:        asset,
-		ClassID:        classID,
-		InstanceID:     instanceID,
-	}
-	ev.ExternalID = str("id", "event_id", "transaction_id", "listingid", "tradeid")
-	if ev.ExternalID == "" {
-		ev.ExternalID = eventExternalID(kind, at, asset, classID, instanceID, name, qty)
-	}
-	return ev
+	return "other:" + verb
 }
 
-func rawSnippet(raw json.RawMessage) []byte {
-	if len(raw) > 16 {
-		return raw[:16]
+// parseHistoryRows normalizes one page's HTML rows. descs resolves names
+// by classid_instanceid; rows without any usable identity are still kept
+// (kind + date) with synthetic IDs rather than dropped.
+func parseHistoryRows(html string, descs map[string]historyDesc) []historyEvent {
+	parts := rowSplitHistoryRe.Split(html, -1)
+	if len(parts) <= 1 {
+		return nil
 	}
-	return raw
+	var out []historyEvent
+	seen := map[string]bool{}
+	for _, part := range parts[1:] {
+		attrs := map[string]string{}
+		for _, m := range rowAttrRe.FindAllStringSubmatch(part, -1) {
+			attrs[strings.ToLower(m[1])] = m[2]
+		}
+		// Splitting on the row marker leaves the opening tag's attribute
+		// tail ahead of the content; cut a leading fragment without "<"
+		// up to its closing ">" (attributes were extracted above).
+		if i := strings.Index(part, ">"); i >= 0 && !strings.Contains(part[:i], "<") {
+			part = part[i+1:]
+		}
+		text := stripTags(part)
+		dateStr := rowDateRe.FindStringSubmatch(text)
+		if dateStr == nil {
+			continue
+		}
+		at := parseSteamTime(dateStr[1])
+		rest := text[len(dateStr[0]):]
+		kind, item := "", ""
+		if m := rowSignRe.FindStringSubmatch(strings.TrimSpace(rest)); m != nil {
+			kind, item = m[1], m[3]
+		} else {
+			kind = strings.TrimSpace(rest)
+		}
+		classID, instanceID := attrs["classid"], attrs["instanceid"]
+		name := ""
+		if d, ok := descs[classID+"_"+instanceID]; ok {
+			name = d.MarketHashName
+		}
+		if name == "" {
+			name = strings.TrimSpace(item)
+		}
+		qty := 1
+		if q, err := strconv.Atoi(attrs["amount"]); err == nil && q > 0 {
+			qty = q
+		}
+		ev := historyEvent{
+			Timestamp:      at,
+			Kind:           normalizeHistoryKind(kind),
+			MarketHashName: name,
+			Quantity:       qty,
+			AssetID:        attrs["assetid"],
+			ClassID:        classID,
+			InstanceID:     instanceID,
+		}
+		ev.ExternalID = eventExternalID(ev.Kind, at, ev.AssetID, classID, instanceID, name, qty)
+		if seen[ev.ExternalID] {
+			continue
+		}
+		seen[ev.ExternalID] = true
+		out = append(out, ev)
+	}
+	return out
+}
+
+// parseHistoryDescs flattens descriptions.{appid}.{classid_instanceid} to
+// names. Only market_hash_name is extracted; the rest stays server-side.
+func parseHistoryDescs(raw map[string]map[string]json.RawMessage) map[string]historyDesc {
+	out := map[string]historyDesc{}
+	for _, byClass := range raw {
+		for key, entry := range byClass {
+			var d struct {
+				MarketHashName string `json:"market_hash_name"`
+			}
+			if err := json.Unmarshal(entry, &d); err != nil || d.MarketHashName == "" {
+				continue
+			}
+			out[key] = historyDesc{MarketHashName: d.MarketHashName}
+		}
+	}
+	return out
 }
 
 // parseSteamTime accepts unix seconds ("1730000000") and common datetime
@@ -189,7 +280,7 @@ func parseSteamTime(s string) time.Time {
 	}
 	for _, layout := range []string{
 		"2006-01-02 15:04:05", time.RFC3339, "Jan 2, 2006",
-		"2 Jan, 2006", "Jan 2 2006",
+		"2 Jan, 2006", "Jan 2 2006", "2 Jan, 2006 3:04pm",
 	} {
 		if t, err := time.Parse(layout, s); err == nil {
 			return t.UTC()
@@ -200,13 +291,15 @@ func parseSteamTime(s string) time.Time {
 
 // fetchHistory walks inventory history from the newest page backwards,
 // following the returned cursor exactly. startTime bounds the import when
-// set (>0). It returns events newest-first plus whether the range completed
-// (false on page failure, cursor stall or page cap: callers must not treat
-// the result as exhaustive).
-func (c *Client) fetchHistory(ctx context.Context, startTime int64) ([]historyEvent, bool, error) {
+// set (>0). It returns events newest-first, the description map, and
+// whether the range completed (false on page failure, cursor stall or page
+// cap: callers must not treat the result as exhaustive).
+func (c *Client) fetchHistory(ctx context.Context, startTime int64) ([]historyEvent, map[string]historyDesc, bool, error) {
 	var all []historyEvent
+	descs := map[string]historyDesc{}
 	var cursor *historyCursor
-	seen := map[string]bool{}
+	seenCursor := map[string]bool{}
+	seenEvents := map[string]bool{}
 	for page := 0; page < c.cfg.MaxPages; page++ {
 		q := url.Values{"ajax": {"1"}, "app[]": {"730"}}
 		if startTime > 0 {
@@ -219,34 +312,34 @@ func (c *Client) fetchHistory(ctx context.Context, startTime int64) ([]historyEv
 		}
 		var env historyPage
 		if err := c.getCommunity(ctx, "/my/inventoryhistory/", q, &env); err != nil {
-			return all, false, err
+			return all, descs, false, err
 		}
-		rows := append(env.Events, env.History...)
+		for k, d := range parseHistoryDescs(env.Descriptions) {
+			descs[k] = d
+		}
+		rows := parseHistoryRows(env.HTML, descs)
 		if len(rows) == 0 {
-			// Shape visibility only (keys, never content): Steam varies
-			// this envelope and silent emptiness hides it.
-			c.log.Info().Strs("shape", env.Keys).Msg("steam inventory history empty page")
-			return all, true, nil
+			return all, descs, true, nil
 		}
-		for _, raw := range rows {
-			ev := parseHistoryEvent(raw)
-			if seen[ev.ExternalID] {
+		for _, ev := range rows {
+			if seenEvents[ev.ExternalID] {
 				continue // duplicated event: idempotent import
 			}
-			seen[ev.ExternalID] = true
+			seenEvents[ev.ExternalID] = true
 			all = append(all, ev)
 		}
-		if !truthy(env.HasMore) && !truthy(env.More) {
-			return all, true, nil
-		}
 		if len(env.Cursor) == 0 || string(env.Cursor) == "null" {
-			return all, false, nil
+			return all, descs, true, nil
 		}
 		var next historyCursor
 		if err := json.Unmarshal(env.Cursor, &next); err != nil || next.empty() {
-			return all, false, nil
+			return all, descs, false, nil
 		}
+		if seenCursor[next.key()] {
+			return all, descs, false, nil
+		}
+		seenCursor[next.key()] = true
 		cursor = &next
 	}
-	return all, false, nil
+	return all, descs, false, nil
 }

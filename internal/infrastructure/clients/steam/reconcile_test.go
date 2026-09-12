@@ -203,7 +203,10 @@ var _ = Describe("Steam Fetch", func() {
 				"success": 1,
 			})
 		default:
-			writeJSON(w, map[string]any{"events": []any{}, "response": map[string]any{"more": false, "trades": []any{}}})
+			writeJSON(w, map[string]any{
+				"html": "", "descriptions": map[string]any{}, "apps": []any{},
+				"response": map[string]any{"more": false, "trades": []any{}},
+			})
 		}
 	}
 
@@ -283,21 +286,31 @@ var _ = Describe("Steam Fetch", func() {
 					"success": 1,
 				})
 			case r.URL.Path == "/my/inventoryhistory/":
-				writeJSON(w, map[string]any{"events": []any{
-					map[string]any{
-						"event_name": "Purchased on Community Market", "assetid": "100",
-						"classid": "1", "instanceid": "0",
-						"market_hash_name": "AK-47 | Redline (Field-Tested)",
-						"quantity":         1, "time": "1746720120",
+				writeJSON(w, map[string]any{
+					"html": `<div class="tradehistoryrow" data-appid="730" data-contextid="2" data-classid="1" data-instanceid="0" data-amount="1" data-assetid="100">` +
+						`<div class="event_description">8 May, 2025 1:00pm Purchased on Community Market - AK-47 | Redline (Field-Tested)</div></div>`,
+					"descriptions": map[string]any{
+						"730": map[string]any{
+							"1_0": map[string]any{"market_hash_name": "AK-47 | Redline (Field-Tested)"},
+						},
 					},
-				}, "more": false})
+					"apps": []any{map[string]any{"appid": 730}},
+				})
 			case r.URL.Path == "/market/myhistory/render/":
 				writeJSON(w, map[string]any{
 					"success":     true,
 					"total_count": 1,
-					"results_html": `<div class="market_listing_row" data-listingid="7" data-timestamp="1746720120">` +
-						`<span class="market_listing_item_name">AK-47 | Redline (Field-Tested)</span>` +
-						`<span>Purchased for -$23.41</span> <span>8 May, 2025</span></div>`,
+					"start":       0,
+					"purchases": map[string]any{
+						"7_7": map[string]any{
+							"listingid": "7", "purchaseid": "7",
+							"time_sold": 1746720120, "steamid_purchaser": "76561198000000000",
+							"failed": 0, "needs_rollback": 0,
+							"asset":       map[string]any{"classid": "1", "instanceid": "0", "amount": "1"},
+							"paid_amount": 2341, "currencyid": "2001",
+						},
+					},
+					"listings": map[string]any{},
 				})
 			default:
 				writeJSON(w, map[string]any{"response": map[string]any{"more": false, "trades": []any{}}})
@@ -312,6 +325,6 @@ var _ = Describe("Steam Fetch", func() {
 		Expect(acts).To(HaveLen(1))
 		Expect(acts[0].Type).To(Equal(brokerage.ActivityBuy))
 		Expect(acts[0].Price).To(BeNumerically("~", 23.41, 1e-9))
-		Expect(store.matched).To(ContainElement("hist:Purchased on Community Market:1746720120:100:1:0:AK-47 | Redline (Field-Tested):1"))
+		Expect(store.matched).To(ContainElement("hist:Purchased on Community Market:1746709200:100:1:0:AK-47 | Redline (Field-Tested):1"))
 	})
 })

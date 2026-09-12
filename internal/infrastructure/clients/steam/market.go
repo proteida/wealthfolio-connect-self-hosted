@@ -13,18 +13,18 @@ import (
 	domainsteam "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/steam"
 )
 
-// Market history parsing is intentionally structural, not visual: Steam
-// renders transaction rows as HTML and the markup changes. The parser below
-// keys on data attributes and stable row anchors, extracts what each row
-// provably contains, and degrades per-row (a row that yields no timestamp
-// or name is skipped) instead of failing the import. Anything matched is
-// normalized; nothing is invented (net amounts especially are only set
-// when explicitly present, never derived by fee math).
+// Market history parsing prefers the structured norender=1 format
+// ({events, purchases, listings, assets}) over rendered HTML: names,
+// amounts and linkage arrive as data, not markup. The HTML parser below
+// stays as a fallback for responses that still render rows. Either way,
+// rows that yield no timestamp or identity are skipped per-row, never
+// fatally, and anything matched is normalized without invention (net
+// amounts especially are only set when explicitly present).
 
 var (
-	// rowSplit cuts results_html into per-listing blocks. Both selectors
-	// below are observational; if neither matches, the whole payload is
-	// treated as one block rather than zero rows.
+	// rowSplit cuts rendered HTML into per-listing blocks. Both selectors
+	// are observational; if neither matches, the whole payload is treated
+	// as one block rather than zero rows.
 	rowSplitRe = regexp.MustCompile(`(?i)(?:market_listing_row|history_row)`)
 	// data attributes observed in market rows. Names normalize hyphens
 	// to underscores ("market-hash-name" reads as market_hash_name).
@@ -38,12 +38,16 @@ var (
 	tagRe        = regexp.MustCompile(`(?s)<[^>]*>`)
 )
 
-// marketPage mirrors the myhistory render envelope.
+// marketPage mirrors the myhistory render envelope, structured or rendered.
 type marketPage struct {
-	Success     bool            `json:"success"`
-	TotalCount  int             `json:"total_count"`
-	Start       int             `json:"start"`
-	ResultsHTML json.RawMessage `json:"results_html"`
+	Success     bool                       `json:"success"`
+	TotalCount  int                        `json:"total_count"`
+	Start       int                        `json:"start"`
+	PageSize    int                        `json:"pagesize"`
+	ResultsHTML json.RawMessage            `json:"results_html"`
+	Events      []json.RawMessage          `json:"events"`
+	Purchases   map[string]json.RawMessage `json:"purchases"`
+	Listings    map[string]json.RawMessage `json:"listings"`
 	// Keys records the envelope's top-level keys for drift visibility.
 	Keys []string `json:"-"`
 }
@@ -63,6 +67,143 @@ func (p *marketPage) UnmarshalJSON(raw []byte) error {
 		p.Keys = append(p.Keys, k+"["+kindOf(v)+"]")
 	}
 	return nil
+}
+
+// marketAsset mirrors purchase/listing asset linkage: full identity plus
+// the post-trade identity when Steam exposes it.
+type marketAsset struct {
+	ClassID      any `json:"classid"`
+	InstanceID   any `json:"instanceid"`
+	Amount       any `json:"amount"`
+	NewID        any `json:"new_id"`
+	NewContextID any `json:"new_contextid"`
+}
+
+type marketPurchase struct {
+	ListingID      string      `json:"listingid"`
+	PurchaseID     string      `json:"purchaseid"`
+	TimeSold       int64       `json:"time_sold"`
+	SteamIDBuyer   string      `json:"steamid_purchaser"`
+	Failed         int         `json:"failed"`
+	NeedsRollback  int         `json:"needs_rollback"`
+	Asset          marketAsset `json:"asset"`
+	PaidAmount     int64       `json:"paid_amount"`
+	CurrencyID     any         `json:"currencyid"`
+	ReceivedAmount int64       `json:"received_amount"`
+}
+
+type marketListing struct {
+	ListingID  string      `json:"listingid"`
+	Price      int64       `json:"price"`
+	CurrencyID any         `json:"currencyid"`
+	Asset      marketAsset `json:"asset"`
+}
+
+// steamCurrency maps Steam currencyid to ISO code and minor-unit decimals.
+// Observed ids are 2000 + wallet currency (2001 = USD, 2003 = EUR, ...);
+// unknown ids keep a C<code> label with 2 decimals rather than failing.
+func steamCurrency(id any) (code string, decimals int) {
+	n, err := strconv.Atoi(strVal(id))
+	if err != nil {
+		return "C" + strVal(id), 2
+	}
+	wallet := n
+	if n >= 2000 {
+		wallet = n - 2000
+	}
+	codes := map[int]string{
+		1: "USD", 2: "GBP", 3: "EUR", 4: "CHF", 5: "RUB", 6: "PLN",
+		7: "BRL", 8: "JPY", 9: "NOK", 10: "IDR", 11: "MYR", 12: "PHP",
+		13: "SGD", 14: "THB", 15: "VND", 16: "KRW", 17: "TRY", 18: "UAH",
+		19: "MXN", 20: "CAD", 21: "AUD", 22: "NZD", 23: "CNY", 24: "INR",
+		25: "CLP", 26: "PEN", 27: "COP", 28: "ZAR", 29: "HKD", 30: "TWD",
+		31: "SAR", 32: "AED", 33: "SEK", 34: "ARS", 35: "ILS", 36: "BYN",
+		37: "KZT", 38: "KWD", 39: "QAR", 40: "HRK", 41: "CZK", 42: "BGN",
+		43: "BDT", 44: "MNT",
+	}
+	code, ok := codes[wallet]
+	if !ok {
+		return "C" + strconv.Itoa(n), 2
+	}
+	decimals = 2
+	switch code {
+	case "JPY", "KRW", "VND", "CLP", "IDR", "MNT":
+		decimals = 0
+	}
+	return code, decimals
+}
+
+func minorToMajor(amount int64, decimals int) float64 {
+	div := 1.0
+	for i := 0; i < decimals; i++ {
+		div *= 10
+	}
+	return float64(amount) / div
+}
+
+// purchaseToTx normalizes one purchase record. Direction comes from the
+// buyer identity (never from event_type integers, whose meanings are
+// undocumented): buyer == me is a buy with paid cost; otherwise a sell
+// with received proceeds (paid when received is absent).
+func purchaseToTx(p marketPurchase, mySteamID string, names map[string]string) (domainsteam.MarketTransaction, bool) {
+	var tx domainsteam.MarketTransaction
+	classID, instanceID := strVal(p.Asset.ClassID), strVal(p.Asset.InstanceID)
+	name := names[classID+"_"+instanceID]
+	qty := intVal(p.Asset.Amount)
+	if qty <= 0 {
+		qty = 1
+	}
+	code, decimals := steamCurrency(p.CurrencyID)
+	tx.MarketHashName = name
+	tx.ClassID = classID
+	tx.InstanceID = instanceID
+	tx.Quantity = qty
+	tx.Currency = code
+	tx.Timestamp = time.Unix(p.TimeSold, 0).UTC()
+	if p.SteamIDBuyer != "" && p.SteamIDBuyer == mySteamID {
+		tx.Type = "buy"
+		tx.ExternalID = "market:buy:" + p.PurchaseID
+		tx.Gross = minorToMajor(p.PaidAmount, decimals)
+	} else {
+		tx.Type = "sell"
+		tx.ExternalID = "market:sell:" + p.ListingID
+		tx.Gross = minorToMajor(p.ReceivedAmount, decimals)
+		if p.ReceivedAmount <= 0 {
+			tx.Gross = minorToMajor(p.PaidAmount, decimals)
+		}
+	}
+	if p.Failed != 0 || p.NeedsRollback != 0 {
+		// Failed/rolled-back purchases are evidence, not acquisitions.
+		tx.Type = "other"
+	}
+	if tx.ExternalID == "market:buy:" || tx.ExternalID == "market:sell:" {
+		return tx, false
+	}
+	return tx, true
+}
+
+// listingToTx normalizes one sell-listing row. Listings carry price but no
+// class identity, so names arrive through the linked purchase when one
+// exists; otherwise the row persists as evidence for later joins.
+func listingToTx(l marketListing, purchase *marketPurchase, names map[string]string) (domainsteam.MarketTransaction, bool) {
+	var tx domainsteam.MarketTransaction
+	classID, instanceID := "", ""
+	if purchase != nil {
+		classID, instanceID = strVal(purchase.Asset.ClassID), strVal(purchase.Asset.InstanceID)
+	}
+	tx.Type = "listing"
+	tx.ExternalID = "market:listing:" + l.ListingID
+	tx.MarketHashName = names[classID+"_"+instanceID]
+	tx.ClassID = classID
+	tx.InstanceID = instanceID
+	tx.Quantity = 1
+	code, decimals := steamCurrency(l.CurrencyID)
+	tx.Currency = code
+	tx.Gross = minorToMajor(l.Price, decimals)
+	if l.ListingID == "" {
+		return tx, false
+	}
+	return tx, true
 }
 
 func stripTags(s string) string {
@@ -226,10 +367,54 @@ func parseMarketHTML(html string) []domainsteam.MarketTransaction {
 	return out
 }
 
+// parseMarketStructured normalizes the norender=1 format: purchases (with
+// buyer-side direction), then listings (inheriting identity from a linked
+// purchase when one exists). names resolves classid_instanceid from
+// inventory-history descriptions; mySteamID decides buy vs sell.
+func parseMarketStructured(env marketPage, mySteamID string, names map[string]string) []domainsteam.MarketTransaction {
+	var out []domainsteam.MarketTransaction
+	seen := map[string]bool{}
+	byListing := map[string]marketPurchase{}
+	for _, raw := range env.Purchases {
+		var p marketPurchase
+		if err := json.Unmarshal(raw, &p); err != nil {
+			continue
+		}
+		if p.ListingID != "" {
+			byListing[p.ListingID] = p
+		}
+		tx, ok := purchaseToTx(p, mySteamID, names)
+		if !ok || seen[tx.ExternalID] {
+			continue
+		}
+		seen[tx.ExternalID] = true
+		out = append(out, tx)
+	}
+	for _, raw := range env.Listings {
+		var l marketListing
+		if err := json.Unmarshal(raw, &l); err != nil {
+			continue
+		}
+		var linked *marketPurchase
+		if p, ok := byListing[l.ListingID]; ok {
+			linked = &p
+		}
+		tx, ok := listingToTx(l, linked, names)
+		if !ok || seen[tx.ExternalID] {
+			continue
+		}
+		seen[tx.ExternalID] = true
+		out = append(out, tx)
+	}
+	return out
+}
+
 // fetchMarketHistory pages myhistory until total_count is covered, the
 // pages stop advancing, or the page cap hits. Partial pages are returned
 // with complete=false so the importer never mistakes them for exhaustive.
-func (c *Client) fetchMarketHistory(ctx context.Context) ([]domainsteam.MarketTransaction, bool, error) {
+// names resolves classid_instanceid (from inventory-history descriptions)
+// because purchase rows carry identity but no market names.
+func (c *Client) fetchMarketHistory(ctx context.Context, mySteamID string, names map[string]string) ([]domainsteam.MarketTransaction, bool, error) {
 	const pageSize = 500
 	var all []domainsteam.MarketTransaction
 	seen := map[string]bool{}
@@ -252,15 +437,20 @@ func (c *Client) fetchMarketHistory(ctx context.Context) ([]domainsteam.MarketTr
 		if total < 0 {
 			total = env.TotalCount
 		}
-		var html string
-		if len(env.ResultsHTML) > 0 {
-			if err := json.Unmarshal(env.ResultsHTML, &html); err != nil {
-				html = string(env.ResultsHTML)
+		rows := parseMarketStructured(env, mySteamID, names)
+		if len(rows) == 0 {
+			var html string
+			if len(env.ResultsHTML) > 0 {
+				if err := json.Unmarshal(env.ResultsHTML, &html); err != nil {
+					html = string(env.ResultsHTML)
+				}
+			}
+			if htmlRows := parseMarketHTML(html); len(htmlRows) > 0 {
+				rows = htmlRows
 			}
 		}
-		rows := parseMarketHTML(html)
 		if len(rows) == 0 {
-			c.log.Info().Strs("shape", env.Keys).Int("html_bytes", len(html)).Msg("steam market history empty page")
+			c.log.Info().Strs("shape", env.Keys).Msg("steam market history empty page")
 			// Empty page before total_count: Steam truncated the range.
 			// Keep what we have; do not claim completeness.
 			return all, start >= total, nil

@@ -2,7 +2,6 @@ package steam
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 
@@ -13,12 +12,9 @@ import (
 var _ = Describe("Inventory history", func() {
 	var server *httptest.Server
 	var handler http.HandlerFunc
-	var queries []string
 	BeforeEach(func() {
-		queries = nil
 		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer GinkgoRecover()
-			queries = append(queries, r.URL.RequestURI())
 			handler(w, r)
 		}))
 	})
@@ -30,79 +26,101 @@ var _ = Describe("Inventory history", func() {
 		return c
 	}
 
-	It("follows the returned cursor exactly", func() {
+	row := func(date, rest, attrs string) string {
+		return `<div class="tradehistoryrow" data-appid="730" data-contextid="2" ` + attrs + `>` +
+			`<div class="event_description">` + date + ` ` + rest + `</div></div>`
+	}
+	descs := map[string]any{
+		"730": map[string]any{
+			"1_0": map[string]any{"market_hash_name": "AK-47 | Redline (Field-Tested)"},
+		},
+	}
+
+	page := func(html string, cursor any) map[string]any {
+		m := map[string]any{
+			"success": true, "html": html, "num": 2,
+			"descriptions": descs,
+			"apps":         []any{map[string]any{"appid": 730}},
+		}
+		if cursor != nil {
+			m["cursor"] = cursor
+		}
+		return m
+	}
+
+	It("parses rows with kinds and follows the cursor exactly", func() {
 		handler = func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Query().Get("cursor[time]") == "" {
-				writeJSON(w, map[string]any{
-					"events": []any{
-						map[string]any{"event_name": "Traded", "assetid": "10", "classid": "1", "instanceid": "0", "market_hash_name": "AK", "time": "1730000000"},
-					},
-					"cursor": map[string]any{"time": "1729999999", "time_frac": "0", "s": "abc"},
-					"more":   true,
-				})
+				Expect(r.URL.Query().Get("app[]")).To(Equal("730"))
+				writeJSON(w, page(
+					row("3 Aug, 2026 1:36am", "Traded - ★ Butterfly Knife | Ultraviolet", `data-classid="9" data-instanceid="0" data-amount="1"`)+
+						row("7 Jul, 2026 2:55pm", "Earned + Premier Season Four Medal", `data-classid="2" data-instanceid="0" data-amount="1"`),
+					map[string]any{"time": "1729999999", "time_frac": "0", "s": "abc"}))
 				return
 			}
 			Expect(r.URL.Query().Get("cursor[time]")).To(Equal("1729999999"))
 			Expect(r.URL.Query().Get("cursor[time_frac]")).To(Equal("0"))
 			Expect(r.URL.Query().Get("cursor[s]")).To(Equal("abc"))
-			writeJSON(w, map[string]any{"events": []any{}, "more": false})
+			writeJSON(w, page("", nil))
 		}
-		evs, complete, err := newClient().fetchHistory(context.Background(), 0)
+		evs, gotDescs, complete, err := newClient().fetchHistory(context.Background(), 0)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(complete).To(BeTrue())
-		Expect(evs).To(HaveLen(1))
+		Expect(evs).To(HaveLen(2))
 		Expect(evs[0].Kind).To(Equal("Traded"))
+		Expect(evs[1].Kind).To(Equal("Earned"))
 		Expect(evs[0].Quantity).To(Equal(1))
+		Expect(gotDescs["1_0"].MarketHashName).To(Equal("AK-47 | Redline (Field-Tested)"))
 	})
 
 	It("sends start_time when importing older ranges", func() {
 		handler = func(w http.ResponseWriter, r *http.Request) {
 			Expect(r.URL.Query().Get("start_time")).To(Equal("1700000000"))
-			writeJSON(w, map[string]any{"events": []any{}})
+			writeJSON(w, page("", nil))
 		}
-		_, complete, err := newClient().fetchHistory(context.Background(), 1700000000)
+		_, _, complete, err := newClient().fetchHistory(context.Background(), 1700000000)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(complete).To(BeTrue())
 	})
 
-	It("dedupes repeated events and derives synthetic IDs", func() {
-		row := map[string]any{"type": "Received", "classid": "1", "market_hash_name": "AK", "quantity": 2, "time": "1730000000"}
+	It("dedupes repeated rows", func() {
+		one := row("8 May, 2025 1:00pm", "Received + AK-47", `data-classid="1" data-instanceid="0" data-amount="1"`)
 		handler = func(w http.ResponseWriter, r *http.Request) {
-			writeJSON(w, map[string]any{"history": []any{row, row}, "has_more": false})
+			writeJSON(w, page(one+one, nil))
 		}
-		evs, complete, err := newClient().fetchHistory(context.Background(), 0)
+		evs, _, complete, err := newClient().fetchHistory(context.Background(), 0)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(complete).To(BeTrue())
 		Expect(evs).To(HaveLen(1))
-		Expect(evs[0].Quantity).To(Equal(2))
-		Expect(evs[0].ExternalID).To(ContainSubstring("hist:"))
 	})
 
-	It("marks incomplete on cursor anomalies", func() {
+	It("marks incomplete on cursor stall", func() {
 		handler = func(w http.ResponseWriter, r *http.Request) {
-			writeJSON(w, map[string]any{
-				"events": []any{map[string]any{"type": "Earned", "time": "1730000000"}},
-				"cursor": "bogus",
-				"more":   true,
-			})
+			writeJSON(w, page(
+				row("8 May, 2025 1:00pm", "Received + AK", `data-classid="1" data-instanceid="0"`),
+				map[string]any{"time": "1", "time_frac": "0", "s": "x"}))
 		}
-		evs, complete, err := newClient().fetchHistory(context.Background(), 0)
+		// Same cursor twice would loop forever; the second identical
+		// cursor stops the walk as incomplete.
+		evs, _, complete, err := newClient().fetchHistory(context.Background(), 0)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(complete).To(BeFalse())
-		Expect(evs).To(HaveLen(1))
+		Expect(evs).NotTo(BeEmpty())
 	})
 
-	It("keeps unknown kinds verbatim", func() {
-		var generic map[string]any
-		raw, _ := json.Marshal(map[string]any{"event_name": "Mysterious Future Event", "time": "1730000000"})
-		Expect(json.Unmarshal(raw, &generic)).To(Succeed())
-		ev := parseHistoryEvent(raw)
-		Expect(ev.Kind).To(Equal("Mysterious Future Event"))
+	It("normalizes verbs and keeps unknown ones visible", func() {
+		Expect(normalizeHistoryKind("Purchased on Community Market foo")).To(Equal(EventMarketBuy))
+		Expect(normalizeHistoryKind("Traded - something")).To(Equal(EventTraded))
+		Expect(normalizeHistoryKind("Earned a new rank and got a drop")).To(Equal(EventEarned))
+		Expect(normalizeHistoryKind("Unboxed greatness")).To(Equal(EventUnboxed))
+		Expect(normalizeHistoryKind("Frobnicated")).To(Equal("other:Frobnicated"))
+		Expect(normalizeHistoryKind("")).To(Equal("other"))
 	})
 
 	It("parses timestamps tolerantly", func() {
 		Expect(parseSteamTime("1730000000").Unix()).To(Equal(int64(1730000000)))
 		Expect(parseSteamTime("2025-05-08 13:22:00").Year()).To(Equal(2025))
+		Expect(parseSteamTime("3 Aug, 2026 1:36am").Year()).To(Equal(2026))
 		Expect(parseSteamTime("bogus").IsZero()).To(BeTrue())
 		Expect(parseSteamTime("").IsZero()).To(BeTrue())
 	})
