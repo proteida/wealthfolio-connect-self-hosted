@@ -273,6 +273,7 @@ func (c *SteamAuthClient) refresh(ctx context.Context) ([]*http.Cookie, error) {
 	}
 	cookies = synthesizeSessionIDs(cookies, sessionID)
 	c.mu.Lock()
+	var names []string
 	for _, cookie := range cookies {
 		u := &url.URL{Scheme: "https", Host: cookieDomain(cookie), Path: "/"}
 		c.jar.SetCookies(u, []*http.Cookie{cookie})
@@ -285,7 +286,12 @@ func (c *SteamAuthClient) refresh(ctx context.Context) ([]*http.Cookie, error) {
 	c.lastCookies = cookies
 	c.lastRefresh = time.Now()
 	rotated := c.rotated_
+	for _, cookie := range cookies {
+		names = append(names, cookie.Name+"@"+cookieDomain(cookie))
+	}
 	c.mu.Unlock()
+	// Names and domains only — never values.
+	c.log.Info().Strs("cookies", names).Msg("steam web cookies refreshed")
 	if rotated {
 		// Deliberately value-free: the token is a password-equivalent.
 		c.log.Warn().Msg("Steam issued a new refresh token; persistent token update required")
