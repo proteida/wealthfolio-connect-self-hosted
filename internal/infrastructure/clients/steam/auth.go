@@ -58,13 +58,16 @@ const (
 )
 
 // steamCookieHosts is the allowlist for authentication-cookie traffic,
-// matched as exact hosts or subdomains (e.g. checkout.steampowered.com,
-// which Steam uses for token transfers). Cookies and tokens never leave
-// Steam infrastructure: anything outside these two registrable domains is
-// refused.
+// matched as exact hosts or subdomains. Steam spreads token transfers
+// across its infrastructure (login/store/checkout/help .steampowered.com,
+// steamcommunity.com, steam.tv, ...), so the allowlist is the set of
+// Steam registrable domains rather than individual hosts. Anything
+// outside them is refused: cookies and tokens never leave Steam.
 var steamCookieHosts = []string{
 	"steamcommunity.com",
 	"steampowered.com",
+	"steam.tv",
+	"steamgames.com",
 }
 
 // ErrSteamReauthenticationRequired is returned when Steam clearly rejects

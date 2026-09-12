@@ -144,6 +144,8 @@ var _ = Describe("Steam auth cookies", func() {
 			"https://store.steampowered.com/y",
 			"https://help.steampowered.com/y",
 			"https://checkout.steampowered.com/login/settoken",
+			"https://steam.tv/login/settoken",
+			"https://store.steamgames.com/y",
 		} {
 			Expect(c.allowlisted(u)).To(BeTrue(), u)
 		}
