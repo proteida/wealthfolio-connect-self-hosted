@@ -44,6 +44,25 @@ type marketPage struct {
 	TotalCount  int             `json:"total_count"`
 	Start       int             `json:"start"`
 	ResultsHTML json.RawMessage `json:"results_html"`
+	// Keys records the envelope's top-level keys for drift visibility.
+	Keys []string `json:"-"`
+}
+
+// UnmarshalJSON decodes known fields and records the envelope shape.
+func (p *marketPage) UnmarshalJSON(raw []byte) error {
+	type plain marketPage
+	if err := json.Unmarshal(raw, (*plain)(p)); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return err
+	}
+	p.Keys = p.Keys[:0]
+	for k, v := range keys {
+		p.Keys = append(p.Keys, k+"["+kindOf(v)+"]")
+	}
+	return nil
 }
 
 func stripTags(s string) string {
@@ -241,6 +260,7 @@ func (c *Client) fetchMarketHistory(ctx context.Context) ([]domainsteam.MarketTr
 		}
 		rows := parseMarketHTML(html)
 		if len(rows) == 0 {
+			c.log.Info().Strs("shape", env.Keys).Int("html_bytes", len(html)).Msg("steam market history empty page")
 			// Empty page before total_count: Steam truncated the range.
 			// Keep what we have; do not claim completeness.
 			return all, start >= total, nil

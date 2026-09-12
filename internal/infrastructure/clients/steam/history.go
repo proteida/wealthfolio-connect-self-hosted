@@ -74,6 +74,46 @@ type historyPage struct {
 	HasMore   any               `json:"more"`
 	More      any               `json:"has_more"`
 	StartTime any               `json:"start_time"`
+	// Keys records the envelope's top-level keys for drift visibility.
+	Keys []string `json:"-"`
+}
+
+// UnmarshalJSON decodes known fields and records the envelope shape.
+func (p *historyPage) UnmarshalJSON(raw []byte) error {
+	type plain historyPage
+	if err := json.Unmarshal(raw, (*plain)(p)); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return err
+	}
+	p.Keys = p.Keys[:0]
+	for k, v := range keys {
+		p.Keys = append(p.Keys, k+"["+kindOf(v)+"]")
+	}
+	return nil
+}
+
+func kindOf(raw json.RawMessage) string {
+	s := strings.TrimSpace(string(raw))
+	if s == "" {
+		return "empty"
+	}
+	switch s[0] {
+	case '{':
+		return "object"
+	case '[':
+		return "array"
+	case '"':
+		return "string"
+	case 't', 'f':
+		return "bool"
+	case 'n':
+		return "null"
+	default:
+		return "number"
+	}
 }
 
 func eventExternalID(kind string, at time.Time, asset, class, instance, name string, qty int) string {
@@ -183,6 +223,9 @@ func (c *Client) fetchHistory(ctx context.Context, startTime int64) ([]historyEv
 		}
 		rows := append(env.Events, env.History...)
 		if len(rows) == 0 {
+			// Shape visibility only (keys, never content): Steam varies
+			// this envelope and silent emptiness hides it.
+			c.log.Info().Strs("shape", env.Keys).Msg("steam inventory history empty page")
 			return all, true, nil
 		}
 		for _, raw := range rows {
