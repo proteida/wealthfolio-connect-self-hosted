@@ -190,3 +190,35 @@ var _ = Describe("Inventory fetch", func() {
 		Expect(truthy("1") && !truthy("0") && truthy(true) && !truthy(false)).To(BeTrue())
 	})
 })
+
+var _ = Describe("Retry-After handling", func() {
+	It("parses seconds and dates", func() {
+		Expect(retryAfter(http.Header{"Retry-After": {"2"}})).To(Equal(2 * time.Second))
+		Expect(retryAfter(http.Header{})).To(BeZero())
+		Expect(retryAfter(http.Header{"Retry-After": {"bogus"}})).To(BeZero())
+		future := time.Now().Add(90 * time.Second).UTC().Format(http.TimeFormat)
+		Expect(retryAfter(http.Header{"Retry-After": {future}})).To(BeNumerically("~", 90*time.Second, 5*time.Second))
+	})
+
+	It("honors Retry-After on 429 then succeeds", func() {
+		calls := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer GinkgoRecover()
+			calls++
+			if calls == 1 {
+				w.Header().Set("Retry-After", "0")
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			writeJSON(w, map[string]any{"assets": []any{}, "descriptions": []any{}})
+		}))
+		defer server.Close()
+		c := testClient(server)
+		c.cfg.CommunityBase = server.URL
+		items, complete, err := c.fetchInventory(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(complete).To(BeTrue())
+		Expect(items).To(BeEmpty())
+		Expect(calls).To(Equal(2))
+	})
+})

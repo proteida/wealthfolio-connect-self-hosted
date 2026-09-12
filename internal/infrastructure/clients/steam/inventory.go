@@ -197,33 +197,40 @@ func cloneValues(q url.Values) url.Values {
 
 func (c *Client) getWithRetry(ctx context.Context, rawURL string, community bool, into any) error {
 	var lastErr error
+	var after time.Duration
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
+			wait := backoff(attempt - 1)
+			// Honor the server's asked delay (429 Retry-After), capped so
+			// a hostile header cannot stall the sync.
+			if after > wait {
+				wait = min(after, 60*time.Second)
+			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(backoff(attempt - 1)):
+			case <-time.After(wait):
 			}
 		}
 		if err := c.throttle(ctx); err != nil {
 			return err
 		}
-		retry, err := c.getOnce(ctx, rawURL, community, into)
-		if err == nil {
+		var retry bool
+		retry, after, lastErr = c.getOnce(ctx, rawURL, community, into)
+		if lastErr == nil {
 			return nil
 		}
-		lastErr = err
 		if !retry {
-			return err
+			return lastErr
 		}
 	}
 	return lastErr
 }
 
-func (c *Client) getOnce(ctx context.Context, rawURL string, community bool, into any) (bool, error) {
+func (c *Client) getOnce(ctx context.Context, rawURL string, community bool, into any) (bool, time.Duration, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return false, steamErr("request", err)
+		return false, 0, steamErr("request", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "wealthfolio-connect/1.0")
@@ -233,25 +240,43 @@ func (c *Client) getOnce(ctx context.Context, rawURL string, community bool, int
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return true, steamErr("http", err)
+		return true, 0, steamErr("http", err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
-		return true, steamErr("body", err)
+		return true, 0, steamErr("body", err)
 	}
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode/100 == 5:
-		return true, steamErr("transient", fmt.Errorf("http %d", resp.StatusCode))
+		return true, retryAfter(resp.Header), steamErr("transient", fmt.Errorf("http %d", resp.StatusCode))
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return false, steamErr("auth", fmt.Errorf("http %d (session rejected?)", resp.StatusCode))
+		return false, 0, steamErr("auth", fmt.Errorf("http %d (session rejected?)", resp.StatusCode))
 	case resp.StatusCode/100 != 2:
-		return false, steamErr("http", fmt.Errorf("http %d", resp.StatusCode))
+		return false, 0, steamErr("http", fmt.Errorf("http %d", resp.StatusCode))
 	}
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.UseNumber()
 	if err := dec.Decode(into); err != nil {
-		return false, steamErr("decode", err)
+		return false, 0, steamErr("decode", err)
 	}
-	return false, nil
+	return false, 0, nil
+}
+
+// retryAfter parses the Retry-After response header (seconds or HTTP
+// date); zero when absent or unparseable.
+func retryAfter(h http.Header) time.Duration {
+	v := strings.TrimSpace(h.Get("Retry-After"))
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := time.Parse(http.TimeFormat, v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
