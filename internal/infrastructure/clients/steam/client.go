@@ -18,6 +18,7 @@ import (
 	"math/rand"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -109,7 +110,14 @@ type Client struct {
 
 	pendingCursor repository.SyncCursor
 	pendingDirty  bool
+	// priceFails counts consecutive market-price fetch failures. At
+	// priceFailBreaker the sync stops pricing and leaves the rest
+	// unvalued instead of burning minutes on a throttled endpoint.
+	priceFails atomic.Int64
 }
+
+// priceFailBreaker trips the pricing circuit breaker.
+const priceFailBreaker = 10
 
 // SetPriceService attaches market valuation (Redis current prices,
 // database history). Nil leaves items unvalued.

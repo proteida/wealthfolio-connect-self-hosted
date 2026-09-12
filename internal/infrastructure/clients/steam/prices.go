@@ -77,7 +77,13 @@ func (c *Client) CurrentPrice(ctx context.Context, marketHashName string) (float
 		}
 	}
 	fetch := func(ctx context.Context) (float64, error) {
-		return c.fetchOverview(ctx, marketHashName)
+		v, err := c.fetchOverview(ctx, marketHashName)
+		if err != nil {
+			c.priceFails.Add(1)
+			return 0, err
+		}
+		c.priceFails.Store(0)
+		return v, nil
 	}
 	remember := func(v float64) {
 		if c.priceHistory == nil || marketHashName == "" {

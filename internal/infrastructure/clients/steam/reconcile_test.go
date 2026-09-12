@@ -465,3 +465,15 @@ var _ = Describe("Value filter and history backfill", func() {
 		Expect(priceStore.puts).To(BeNumerically(">", 0))
 	})
 })
+
+var _ = Describe("Price circuit breaker", func() {
+	It("stops pricing after repeated provider failures", func() {
+		c := New(ClientConfig{SteamID: "1"}, nil)
+		for i := 0; i < 9; i++ {
+			c.priceFails.Add(1)
+		}
+		Expect(c.priceFails.Load() >= priceFailBreaker).To(BeFalse())
+		c.priceFails.Add(1)
+		Expect(c.priceFails.Load() >= priceFailBreaker).To(BeTrue())
+	})
+})

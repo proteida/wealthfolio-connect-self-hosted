@@ -374,6 +374,10 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 		return price, priceType, ok
 	}
 	for _, r := range resolved {
+		if c.priceFails.Load() >= priceFailBreaker {
+			c.log.Warn().Msg("steam price provider failing repeatedly; leaving remaining items unvalued")
+			break
+		}
 		price, priceType, valued := priceOf(r.Asset.MarketHashName)
 		if c.cfg.MinItemValueUSD > 0 && valued && !before[r.Asset.AssetID] &&
 			float64(r.Asset.Amount)*price < c.cfg.MinItemValueUSD {
