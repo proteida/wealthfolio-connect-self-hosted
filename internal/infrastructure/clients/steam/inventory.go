@@ -247,6 +247,11 @@ func (c *Client) getOnce(ctx context.Context, rawURL string, community bool, int
 	if err != nil {
 		return true, 0, steamErr("body", err)
 	}
+	if strings.Contains(rawURL, "inventoryhistory") || strings.Contains(rawURL, "myhistory") {
+		// Operational visibility only: counts and status, never bodies
+		// (history holds the user's item names) or secrets.
+		c.log.Info().Str("path", req.URL.Path).Int("status", resp.StatusCode).Int("bytes", len(raw)).Int("cookies", len(req.Cookies())).Msg("steam history response")
+	}
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode/100 == 5:
 		return true, retryAfter(resp.Header), steamErr("transient", fmt.Errorf("http %d", resp.StatusCode))
