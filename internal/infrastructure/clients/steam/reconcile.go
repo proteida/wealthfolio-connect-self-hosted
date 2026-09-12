@@ -373,12 +373,18 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 		}{price, priceType, ok}
 		return price, priceType, ok
 	}
+	pricing := true
 	for _, r := range resolved {
-		if c.priceFails.Load() >= priceFailBreaker {
+		if pricing && c.priceFails.Load() >= priceFailBreaker {
 			c.log.Warn().Msg("steam price provider failing repeatedly; leaving remaining items unvalued")
-			break
+			pricing = false
 		}
-		price, priceType, valued := priceOf(r.Asset.MarketHashName)
+		var price float64
+		var priceType string
+		var valued bool
+		if pricing {
+			price, priceType, valued = priceOf(r.Asset.MarketHashName)
+		}
 		if c.cfg.MinItemValueUSD > 0 && valued && !before[r.Asset.AssetID] &&
 			float64(r.Asset.Amount)*price < c.cfg.MinItemValueUSD {
 			// New dust stays out of positions and activities (but remains
