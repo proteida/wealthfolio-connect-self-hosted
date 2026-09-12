@@ -42,8 +42,10 @@ func NewSteamPriceHandler(cfg *config.Config, prices *appprices.Service, history
 	return &SteamPriceHandler{client: c, history: history}
 }
 
-// RegisterAPIRoutes mounts the steam price paths.
-func (h *SteamPriceHandler) RegisterAPIRoutes(r chi.Router) {
+// RegisterPublicAPIRoutes mounts the steam price paths. Market prices are
+// public data with no account scope, so these stay reachable without a
+// Bearer token (like subscription plans).
+func (h *SteamPriceHandler) RegisterPublicAPIRoutes(r chi.Router) {
 	r.Get("/steam/prices/current", h.GetCurrent)
 	r.Get("/steam/prices/history", h.GetHistory)
 }

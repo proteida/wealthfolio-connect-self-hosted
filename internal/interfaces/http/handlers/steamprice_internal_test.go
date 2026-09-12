@@ -66,7 +66,7 @@ var _ = Describe("Steam price endpoints", func() {
 			{Asset: "steam:730:AK", Timestamp: time.Date(2025, 5, 8, 0, 0, 0, 0, time.UTC), Currency: "STEAM_1", Price: 30, Source: "steam_market"},
 		}}}
 		r = chi.NewRouter()
-		h.RegisterAPIRoutes(r)
+		h.RegisterPublicAPIRoutes(r)
 	})
 
 	AfterEach(func() {
