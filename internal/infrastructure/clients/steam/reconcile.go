@@ -392,7 +392,9 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 	if skipped > 0 {
 		c.log.Info().Int("skipped_dust", skipped).Float64("threshold", c.cfg.MinItemValueUSD).Msg("steam items below value threshold excluded")
 	}
+	phased := time.Now()
 	c.backfillPriceHistory(ctx, resolved)
+	c.log.Info().Int("positions", len(positions)).Int("activities", len(activities)).Dur("assemble", time.Since(phased)).Msg("steam snapshot assembled")
 	return domainsync.BrokerSnapshot{
 		Connection: brokerage.Connection{
 			ID: "steam-conn", AuthorizationID: "steam-auth",

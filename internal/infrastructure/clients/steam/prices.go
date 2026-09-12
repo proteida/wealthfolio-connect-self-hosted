@@ -195,10 +195,11 @@ func tripleToFloat(v any) (float64, bool) {
 }
 
 // getCommunityAuthed is getCommunity but requires a session: the history
-// endpoint may demand authentication. Without a session it fails fast
-// instead of burning retries on 403s.
+// endpoint may demand authentication. Without any session it fails fast
+// instead of burning retries on 403s. A refresh-token authenticator counts
+// as a session (its jar carries the cookies).
 func (c *Client) getCommunityAuthed(ctx context.Context, path string, q url.Values, into any) error {
-	if c.cfg.Session == "" {
+	if c.cfg.Session == "" && c.auth == nil {
 		return steamErr("auth", fmt.Errorf("%s requires a Steam session", path))
 	}
 	return c.getCommunity(ctx, path, q, into)
