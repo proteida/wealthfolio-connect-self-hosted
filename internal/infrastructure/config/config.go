@@ -156,6 +156,11 @@ type SteamConfig struct {
 	PriceTTL time.Duration
 	// Currency is the Steam wallet currency code for market prices (1 = USD).
 	Currency int
+	// HistoryBudget caps price-history backfills per sync (0 disables).
+	HistoryBudget int
+	// MinItemValueUSD drops new items below this total from positions and
+	// activities, with grandfathering for previously synced items (0 off).
+	MinItemValueUSD float64
 }
 
 // Loader is the function shape used internally; exposed for tests.
@@ -324,6 +329,14 @@ func LoadFrom(get Loader) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	historyBudget, err := getInt(get, "STEAM_HISTORY_BUDGET", 5)
+	if err != nil {
+		return nil, err
+	}
+	minItemValue, err := getFloat(get, "STEAM_MIN_ITEM_VALUE_USD", 10)
+	if err != nil {
+		return nil, err
+	}
 	cfg.Steam = SteamConfig{
 		SteamID:      strings.TrimSpace(getString(get, "STEAM_ID", "")),
 		APIKey:       strings.TrimSpace(getString(get, "STEAM_API_KEY", "")),
@@ -331,6 +344,8 @@ func LoadFrom(get Loader) (*Config, error) {
 		RefreshToken: strings.TrimSpace(getString(get, "STEAM_REFRESH_TOKEN", "")),
 		PriceTTL: time.Duration(priceTTLMin) * time.Minute,
 		Currency: steamCurrency,
+		HistoryBudget: historyBudget,
+		MinItemValueUSD: minItemValue,
 	}
 
 	return cfg, nil
@@ -364,6 +379,18 @@ func getInt(get Loader, key string, def int) (int, error) {
 	parsed, err := strconv.Atoi(v)
 	if err != nil {
 		return 0, fmt.Errorf("config: %s must be an integer: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func getFloat(get Loader, key string, def float64) (float64, error) {
+	v, ok := get(key)
+	if !ok || strings.TrimSpace(v) == "" {
+		return def, nil
+	}
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil {
+		return 0, fmt.Errorf("config: %s must be a number: %w", key, err)
 	}
 	return parsed, nil
 }

@@ -49,10 +49,17 @@ func parseSteamMoney(s string) (float64, bool) {
 	return v, true
 }
 
+// PriceAssetKey namespaces a market quote for the shared price stores:
+// appid, name and currency travel in the key so nothing collides across
+// games. Exported so handlers and backfill share the exact mapping.
+func PriceAssetKey(marketHashName string, currency int) (asset, curr string) {
+	return "steam:730:" + strings.ToUpper(strings.TrimSpace(marketHashName)), fmt.Sprintf("STEAM_%d", currency)
+}
+
 // priceKey namespaces a market quote for the shared cache: appid, name
 // and currency travel in the key so nothing collides across games.
 func priceKey(marketHashName string, currency int) (asset, curr string) {
-	return "steam:730:" + strings.ToUpper(strings.TrimSpace(marketHashName)), fmt.Sprintf("STEAM_%d", currency)
+	return PriceAssetKey(marketHashName, currency)
 }
 
 // CurrentPrice returns the median Steam market price (lowest fallback)

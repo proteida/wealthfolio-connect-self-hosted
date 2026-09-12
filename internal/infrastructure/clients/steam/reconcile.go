@@ -353,14 +353,27 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 	}
 	positions := make([]brokerage.Position, 0, len(resolved))
 	activities := make([]brokerage.Activity, 0, len(resolved))
+	skipped := 0
 	for _, r := range resolved {
 		price, priceType, valued := c.CurrentPrice(ctx, r.Asset.MarketHashName)
+		if c.cfg.MinItemValueUSD > 0 && valued && !before[r.Asset.AssetID] &&
+			float64(r.Asset.Amount)*price < c.cfg.MinItemValueUSD {
+			// New dust stays out of positions and activities (but remains
+			// in the persisted snapshot, so history is never lost and a
+			// later price rise re-admits it via grandfathering).
+			skipped++
+			continue
+		}
 		view := domainsteam.PnL(toDomainAsset(c.cfg.SteamID, r, now), optFloat(valued, price), priceType)
 		positions = append(positions, toPosition(r, view))
 		if act, ok := toActivity(r, view, accountID, now); ok {
 			activities = append(activities, act)
 		}
 	}
+	if skipped > 0 {
+		c.log.Info().Int("skipped_dust", skipped).Float64("threshold", c.cfg.MinItemValueUSD).Msg("steam items below value threshold excluded")
+	}
+	c.backfillPriceHistory(ctx, resolved)
 	return domainsync.BrokerSnapshot{
 		Connection: brokerage.Connection{
 			ID: "steam-conn", AuthorizationID: "steam-auth",
@@ -374,6 +387,51 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 	}, nil
 }
 
+// backfillPriceHistory pulls full histories for up to HistoryBudget
+// distinct names lacking recent coverage. Each name costs one provider
+// call; covered names (a stored point within historyLookback) cost only a
+// database read.
+func (c *Client) backfillPriceHistory(ctx context.Context, resolved []Resolution) {
+	if c.priceHistory == nil || c.cfg.HistoryBudget <= 0 {
+		return
+	}
+	seen := map[string]bool{}
+	budget := c.cfg.HistoryBudget
+	now := time.Now().UTC()
+	for _, r := range resolved {
+		name := r.Asset.MarketHashName
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		if budget <= 0 {
+			continue
+		}
+		asset, curr := PriceAssetKey(name, c.cfg.Currency)
+		covered := false
+		if pts, err := c.priceHistory.List(ctx, asset, curr, now.Add(-historyLookback), now); err == nil && len(pts) > 0 {
+			covered = true
+		}
+		if covered {
+			continue
+		}
+		budget--
+		n, err := c.SyncPriceHistory(ctx, name, c.priceHistory)
+		if err != nil {
+			c.log.Warn().Err(err).Str("name", name).Msg("steam price history backfill failed")
+			continue
+		}
+		c.log.Info().Str("name", name).Int("points", n).Msg("steam price history backfilled")
+	}
+}
+
+// historyLookback bounds the coverage check: a name with any stored point
+// in this window skips the backfill fetch.
+const historyLookback = 30 * 24 * time.Hour
+
+// snapshot write fails the sync (durable state matters); provenance rows
+// are best-effort and only warn, so a flaky history endpoint never blocks
+// holdings. Unmatched events always persist for later reconciliation.
 // persistProvenance writes the sync outcome to the Steam store. The
 // snapshot write fails the sync (durable state matters); provenance rows
 // are best-effort and only warn, so a flaky history endpoint never blocks
@@ -494,6 +552,20 @@ func optFloat(ok bool, v float64) *float64 {
 	return &v
 }
 
+// titleOf returns the human-readable title for an item: the market name
+// first, then the inventory name, never a bare classid/instanceid pair
+// (and never empty — downstream UIs fall back to raw identifiers when the
+// title fields are blank).
+func titleOf(r Resolution) string {
+	if r.Asset.MarketHashName != "" {
+		return r.Asset.MarketHashName
+	}
+	if r.Asset.Name != "" {
+		return r.Asset.Name
+	}
+	return "Steam item " + r.Asset.AssetID
+}
+
 // toPosition maps one resolved asset to a holding line. Unknown prices
 // stay zero-price positions (visible, never erased); unknown basis stays
 // zero per the Position contract (never the market price).
@@ -512,8 +584,8 @@ func toPosition(r Resolution, view domainsteam.PricedAsset) brokerage.Position {
 	}
 	return brokerage.Position{
 		Symbol: brokerage.Symbol{
-			Symbol: r.Asset.MarketHashName, RawSymbol: r.Asset.ClassID + "/" + r.Asset.InstanceID,
-			Name:     r.Asset.Name,
+			Symbol: titleOf(r), RawSymbol: r.Asset.ClassID + "/" + r.Asset.InstanceID,
+			Name: titleOf(r), Description: titleOf(r),
 			Type:     brokerage.SymbolType{Code: "COLLECTIBLE", IsSupported: true, Description: "Steam collectible"},
 			Exchange: brokerage.Exchange{Code: "STEAM", Name: "Steam Community Market"},
 			Currency: brokerage.Currency{Code: "USD"},
@@ -535,7 +607,8 @@ func toActivity(r Resolution, view domainsteam.PricedAsset, accountID string, no
 		ID:        "steam:" + r.Asset.AssetID,
 		AccountID: accountID,
 		Symbol: &brokerage.Symbol{
-			Symbol: r.Asset.MarketHashName, RawSymbol: r.Asset.ClassID + "/" + r.Asset.InstanceID,
+			Symbol: titleOf(r), RawSymbol: r.Asset.ClassID + "/" + r.Asset.InstanceID,
+			Name: titleOf(r), Description: titleOf(r),
 			Type:     brokerage.SymbolType{Code: "COLLECTIBLE", IsSupported: true},
 			Exchange: brokerage.Exchange{Code: "STEAM"},
 			Currency: brokerage.Currency{Code: "USD"},

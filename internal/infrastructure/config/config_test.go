@@ -50,6 +50,8 @@ var _ = Describe("Config.LoadFrom", func() {
 			Expect(cfg.Steam.SteamID).To(BeEmpty())
 			Expect(cfg.Steam.PriceTTL).To(Equal(20 * time.Minute))
 			Expect(cfg.Steam.Currency).To(Equal(1))
+			Expect(cfg.Steam.HistoryBudget).To(Equal(5))
+			Expect(cfg.Steam.MinItemValueUSD).To(Equal(10.0))
 		})
 	})
 
@@ -70,6 +72,8 @@ var _ = Describe("Config.LoadFrom", func() {
 		Expect(cfg.Steam.Session).To(Equal("sessionid=abc"))
 		Expect(cfg.Steam.RefreshToken).To(Equal("eyJhbGciOiJFUzI1NiJ9.payload.sig"))
 		Expect(cfg.Steam.PriceTTL).To(Equal(30 * time.Minute))
+		Expect(cfg.Steam.HistoryBudget).To(Equal(5))
+		Expect(cfg.Steam.MinItemValueUSD).To(Equal(10.0))
 		Expect(cfg.Steam.Currency).To(Equal(3))
 	})
 

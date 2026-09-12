@@ -368,6 +368,8 @@ key stay in the environment only — never logged, persisted or committed.
 | `STEAM_REFRESH_TOKEN`     | —       | WebBrowser refresh token from `tools/steam-auth` (preferred over `STEAM_SESSION`).          |
 | `STEAM_PRICE_TTL_MINUTES` | `20`    | Current market-price cache TTL.                                                             |
 | `STEAM_CURRENCY`          | `1`     | Steam wallet currency code for market prices (`1` = USD).                                   |
+| `STEAM_HISTORY_BUDGET`    | `5`     | Price-history backfills per sync (distinct names with no recent coverage).                  |
+| `STEAM_MIN_ITEM_VALUE_USD`| `10`    | New items below this `qty × price` total stay out of positions/activities (previously synced items keep updating; unpriced items are always kept). |
 
 ### Steam authentication
 
@@ -411,6 +413,8 @@ refresh token is reported (never logged or persisted) when Steam issues one.
 | PATCH  | `/api/v1/sync/brokerage/accounts/{id}`                        | Toggle `sync_enabled` for one account.                   |
 | GET    | `/api/v1/sync/brokerage/accounts/{id}/activities`             | Paginated activities.                                    |
 | GET    | `/api/v1/sync/brokerage/accounts/{id}/holdings`               | Latest holdings snapshot.                                |
+| GET    | `/api/v1/steam/prices/current?name=`                          | Current Steam market price by `market_hash_name` (cached). |
+| GET    | `/api/v1/steam/prices/history?name=&from=&to=`                | Stored historical Steam market prices (RFC3339 bounds).  |
 | POST   | `/api/v1/connect/session`                                     | Seed/refresh the local sync session (see Quick Start).   |
 | GET    | `/healthz`                                                    | Liveness + DB ping.                                      |
 | GET    | `/readyz`                                                     | Readiness (post-migration).                              |

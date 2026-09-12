@@ -328,3 +328,140 @@ var _ = Describe("Steam Fetch", func() {
 		Expect(store.matched).To(ContainElement("hist:Purchased on Community Market:1746709200:100:1:0:AK-47 | Redline (Field-Tested):1"))
 	})
 })
+
+var _ = Describe("Item titles", func() {
+	It("prefers the market name, then inventory name, never bare ids", func() {
+		mk := func(name, market string) Resolution {
+			return Resolution{Asset: InventoryItem{AssetID: "1", ClassID: "2", InstanceID: "3", Name: name, MarketHashName: market}}
+		}
+		Expect(titleOf(mk("Inv", "Market"))).To(Equal("Market"))
+		Expect(titleOf(mk("Inv", ""))).To(Equal("Inv"))
+		Expect(titleOf(mk("", ""))).To(Equal("Steam item 1"))
+	})
+})
+
+var _ = Describe("Value filter and history backfill", func() {
+	var server *httptest.Server
+	var handler http.HandlerFunc
+	BeforeEach(func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer GinkgoRecover()
+			handler(w, r)
+		}))
+	})
+	AfterEach(func() { server.Close() })
+
+	twoItems := func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/inventory/"):
+			writeJSON(w, map[string]any{
+				"assets": []any{
+					map[string]any{"assetid": "100", "classid": "1", "instanceid": "0", "amount": "1"},
+					map[string]any{"assetid": "200", "classid": "2", "instanceid": "0", "amount": "1"},
+				},
+				"descriptions": []any{
+					map[string]any{"classid": "1", "instanceid": "0", "market_hash_name": "AK-47 | Redline", "marketable": 1, "tradable": 1},
+					map[string]any{"classid": "2", "instanceid": "0", "market_hash_name": "Cheap Case", "marketable": 1, "tradable": 1},
+				},
+				"success": 1,
+			})
+		case r.URL.Path == "/market/priceoverview/":
+			name := r.URL.Query().Get("market_hash_name")
+			median := "$0.50"
+			if strings.Contains(name, "Redline") {
+				median = "$100.00"
+			}
+			writeJSON(w, map[string]any{"success": true, "median_price": median})
+		default:
+			writeJSON(w, map[string]any{
+				"html": "", "descriptions": map[string]any{}, "apps": []any{},
+				"response": map[string]any{"more": false, "trades": []any{}},
+			})
+		}
+	}
+
+	newFilteredClient := func(store *stubSteamStore, minValue float64) *Client {
+		cfg := defaultClientConfig()
+		cfg.SteamID = "76561198000000000"
+		cfg.MinInterval = time.Millisecond
+		cfg.CommunityBase = server.URL
+		cfg.StoreBase = server.URL
+		cfg.MinItemValueUSD = minValue
+		c := New(cfg, server.Client())
+		if store != nil {
+			c.SetSteamStore(store)
+		}
+		return c
+	}
+
+	It("drops new dust from positions but keeps it in the snapshot", func() {
+		handler = twoItems
+		store := &stubSteamStore{}
+		snap, err := newFilteredClient(store, 10).Fetch(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.Holdings[0].Positions).To(HaveLen(1))
+		Expect(snap.Holdings[0].Positions[0].Symbol.Symbol).To(Equal("AK-47 | Redline"))
+		Expect(store.snapshots).To(HaveLen(1))
+		Expect(store.snapshots[0].Assets).To(HaveLen(2))
+	})
+
+	It("grandfathers previously synced dust", func() {
+		handler = twoItems
+		store := &stubSteamStore{}
+		Expect(store.SaveSnapshot(context.Background(), repository.SteamInventorySnapshot{
+			ID: "prev", SteamID: "76561198000000000", TakenAt: time.Now().Add(-time.Hour),
+			Complete: true,
+			Assets: []repository.SteamAssetRow{
+				{AssetID: "100", ClassID: "1", InstanceID: "0", MarketHashName: "AK-47 | Redline", Amount: 1},
+				{AssetID: "200", ClassID: "2", InstanceID: "0", MarketHashName: "Cheap Case", Amount: 1},
+			},
+		})).To(Succeed())
+		snap, err := newFilteredClient(store, 10).Fetch(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.Holdings[0].Positions).To(HaveLen(2))
+	})
+
+	It("keeps unpriced items regardless of threshold", func() {
+		handler = func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/inventory/") {
+				twoItems(w, r)
+				return
+			}
+			if r.URL.Path == "/market/priceoverview/" {
+				writeJSON(w, map[string]any{"success": false})
+				return
+			}
+			writeJSON(w, map[string]any{
+				"html": "", "descriptions": map[string]any{}, "apps": []any{},
+				"response": map[string]any{"more": false, "trades": []any{}},
+			})
+		}
+		snap, err := newFilteredClient(&stubSteamStore{}, 1000).Fetch(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.Holdings[0].Positions).To(HaveLen(2))
+	})
+
+	It("backfills missing histories within budget", func() {
+		handler = twoItems
+		store := &stubSteamStore{}
+		priceStore := newStubPriceStore()
+		c := newFilteredClient(store, 0)
+		c.SetPriceHistoryStore(priceStore)
+		c.cfg.Session = "sessionid=x"
+		// Price history endpoint is stubbed through the same server.
+		oldHandler := handler
+		handler = func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/market/pricehistory/" {
+				writeJSON(w, map[string]any{"success": true, "prices": []any{
+					[]any{"8 May, 2025", 100.0, "5"},
+				}})
+				return
+			}
+			oldHandler(w, r)
+		}
+		c.cfg.HistoryBudget = 5
+		_, err := c.Fetch(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(priceStore.puts).To(BeNumerically(">", 0))
+	})
+})

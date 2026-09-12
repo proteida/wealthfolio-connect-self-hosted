@@ -113,16 +113,16 @@ type PricePoint struct {
 
 // MarketTransaction is one normalized Community Market ledger row.
 type MarketTransaction struct {
-	ExternalID string
-	Type       string // buy | sell | listing | cancel | other
-	Timestamp  time.Time
+	ExternalID     string
+	Type           string // buy | sell | listing | cancel | other
+	Timestamp      time.Time
 	MarketHashName string
-	ClassID    string
-	InstanceID string
-	Quantity   int
-	Gross      float64
-	Net        *float64
-	Currency   string
+	ClassID        string
+	InstanceID     string
+	Quantity       int
+	Gross          float64
+	Net            *float64
+	Currency       string
 }
 
 // TradeRecord is one normalized Steam trade.

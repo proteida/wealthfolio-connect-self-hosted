@@ -58,17 +58,30 @@ type ClientConfig struct {
 	PriceTTL time.Duration
 	// Currency is the Steam wallet currency code for market prices (1 = USD).
 	Currency int
+	// HistoryBudget caps price-history backfills per sync (distinct names).
+	// Zero disables historical backfill; the operational default (5)
+	// comes from STEAM_HISTORY_BUDGET.
+	HistoryBudget int
+	// MinItemValueUSD drops new items valued below this USD total
+	// (quantity × price) from positions and activities. Items seen in a
+	// previous snapshot keep syncing (grandfathered); unpriced items are
+	// always kept. Zero disables the filter; the operational default (10)
+	// comes from STEAM_MIN_ITEM_VALUE_USD. The threshold is denominated
+	// in the price currency, USD by default.
+	MinItemValueUSD float64
 }
 
 func defaultClientConfig() ClientConfig {
 	return ClientConfig{
-		CommunityBase: "https://steamcommunity.com",
-		StoreBase:     "https://api.steampowered.com",
-		MinInterval:   time.Second,
-		MaxPages:      20,
-		MaxRetries:    3,
-		PriceTTL:      20 * time.Minute,
-		Currency:      1,
+		CommunityBase:   "https://steamcommunity.com",
+		StoreBase:       "https://api.steampowered.com",
+		MinInterval:     time.Second,
+		MaxPages:        20,
+		MaxRetries:      3,
+		PriceTTL:        20 * time.Minute,
+		Currency:        1,
+		HistoryBudget:   0,
+		MinItemValueUSD: 0,
 	}
 }
 
@@ -90,6 +103,9 @@ type Client struct {
 	// lots). Nil skips steam-specific persistence; the generic sync still
 	// persists holdings and activities.
 	store repository.SteamAssetRepository
+	// priceHistory is the optional market-price history store for bounded
+	// backfills. Nil disables them.
+	priceHistory repository.PriceHistoryRepository
 
 	pendingCursor repository.SyncCursor
 	pendingDirty  bool
@@ -120,6 +136,12 @@ func New(cfg ClientConfig, h HTTPDoer) *Client {
 	if cfg.PriceTTL <= 0 {
 		cfg.PriceTTL = def.PriceTTL
 	}
+	if cfg.HistoryBudget < 0 {
+		cfg.HistoryBudget = 0
+	}
+	if cfg.MinItemValueUSD < 0 {
+		cfg.MinItemValueUSD = 0
+	}
 	if cfg.Currency <= 0 {
 		cfg.Currency = def.Currency
 	}
@@ -141,6 +163,14 @@ func New(cfg ClientConfig, h HTTPDoer) *Client {
 // ID returns the slug used by sync orchestration.
 func (c *Client) ID() string { return "steam" }
 
+// Currency returns the configured Steam wallet currency code.
+func (c *Client) Currency() int {
+	if c.cfg.Currency <= 0 {
+		return 1
+	}
+	return c.cfg.Currency
+}
+
 // SetLogger attaches structured logging.
 func (c *Client) SetLogger(log zerolog.Logger) { c.log = log }
 
@@ -157,6 +187,12 @@ func (c *Client) ConfigureCursors(cursors repository.CursorRepository) {
 
 // SetSteamStore attaches Steam inventory persistence. Nil disables it.
 func (c *Client) SetSteamStore(store repository.SteamAssetRepository) { c.store = store }
+
+// SetPriceHistoryStore attaches the market-price history store used for
+// bounded backfills. Nil disables backfills.
+func (c *Client) SetPriceHistoryStore(store repository.PriceHistoryRepository) {
+	c.priceHistory = store
+}
 
 // ensureAuth builds the refresh-token authenticator on first use and swaps
 // the transport for the cookie-jar one. Static sessions keep working when
