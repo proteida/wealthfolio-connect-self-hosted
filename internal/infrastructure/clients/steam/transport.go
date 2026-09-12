@@ -65,7 +65,9 @@ func (t *authRetryTransport) RoundTrip(req *http.Request) (*http.Response, error
 	if !t.auth.allowlisted(req.URL.String()) {
 		return nil, steamErr("auth", fmt.Errorf("refusing credentials outside allowlist: %s", redactURL(req.URL.String())))
 	}
-	t.auth.attachCookies(req)
+	// Cookies come from the client's jar (shared with GetWebCookies); the
+	// transport only adds retry behavior, never headers, so cookies cannot
+	// duplicate or leak across domains.
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
 		return resp, err
@@ -92,7 +94,6 @@ func (t *authRetryTransport) RoundTrip(req *http.Request) (*http.Response, error
 		}
 		retry.Body = body
 	}
-	t.auth.attachCookies(retry)
 	resp2, err := t.base.RoundTrip(retry)
 	if err != nil {
 		return resp2, err
@@ -102,20 +103,6 @@ func (t *authRetryTransport) RoundTrip(req *http.Request) (*http.Response, error
 		return nil, steamErr("auth", fmt.Errorf("still unauthenticated after refresh"))
 	}
 	return resp2, nil
-}
-
-// attachCookies copies jar cookies into the request (allowlisted hosts
-// only; the jar itself scopes by domain, this is defense in depth).
-func (c *SteamAuthClient) attachCookies(req *http.Request) {
-	if req.URL == nil || !c.allowlisted(req.URL.String()) {
-		return
-	}
-	c.mu.Lock()
-	cookies := c.jar.Cookies(req.URL)
-	c.mu.Unlock()
-	for _, cookie := range cookies {
-		req.AddCookie(cookie)
-	}
 }
 
 // isAuthFailure conservatively detects unauthenticated sessions: 401/403,

@@ -309,6 +309,13 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 	if tradeErr != nil {
 		c.log.Warn().Err(tradeErr).Msg("steam trade history unavailable; proceeding without trade evidence")
 	}
+	c.log.Info().
+		Int("inventory", len(items)).
+		Int("history_events", len(events)).
+		Int("market_txs", len(marketTxs)).
+		Int("trades", len(trades)).
+		Bool("complete", complete).
+		Msg("steam provenance fetched")
 	market := make(map[string]domainsteam.MarketTransaction, len(marketTxs))
 	for _, tx := range marketTxs {
 		market[tx.ExternalID] = tx
