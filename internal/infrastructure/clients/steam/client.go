@@ -124,7 +124,16 @@ func New(cfg ClientConfig, h HTTPDoer) *Client {
 		cfg.Currency = def.Currency
 	}
 	if h == nil {
-		h = &http.Client{Timeout: 15 * time.Second}
+		// Fresh connections per request: Steam's abuse-sensitive
+		// history endpoints throttle reused keep-alive sessions that
+		// browsers/curl (fresh connections) sail through. Throughput
+		// cost is acceptable for a polling sync client.
+		h = &http.Client{
+			Timeout: 15 * time.Second,
+			Transport: &http.Transport{
+				DisableKeepAlives: true,
+			},
+		}
 	}
 	return &Client{cfg: cfg, http: h, log: zerolog.Nop(), mu: make(chan struct{}, 1)}
 }
