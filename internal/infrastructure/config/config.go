@@ -82,7 +82,8 @@ type CryptoConfig struct {
 	// TONWallets holds TON addresses in any form (raw or user-friendly),
 	// comma-separated via TON_WALLETS. Case is preserved: TON addresses
 	// are case-sensitive.
-	TONWallets []string}
+	TONWallets []string
+}
 
 // Config is the single source of truth for runtime configuration.
 type Config struct {
@@ -338,13 +339,13 @@ func LoadFrom(get Loader) (*Config, error) {
 		return nil, err
 	}
 	cfg.Steam = SteamConfig{
-		SteamID:      strings.TrimSpace(getString(get, "STEAM_ID", "")),
-		APIKey:       strings.TrimSpace(getString(get, "STEAM_API_KEY", "")),
-		Session:      strings.TrimSpace(getString(get, "STEAM_SESSION", "")),
-		RefreshToken: strings.TrimSpace(getString(get, "STEAM_REFRESH_TOKEN", "")),
-		PriceTTL: time.Duration(priceTTLMin) * time.Minute,
-		Currency: steamCurrency,
-		HistoryBudget: historyBudget,
+		SteamID:         strings.TrimSpace(getString(get, "STEAM_ID", "")),
+		APIKey:          strings.TrimSpace(getString(get, "STEAM_API_KEY", "")),
+		Session:         strings.TrimSpace(getString(get, "STEAM_SESSION", "")),
+		RefreshToken:    strings.TrimSpace(getString(get, "STEAM_REFRESH_TOKEN", "")),
+		PriceTTL:        time.Duration(priceTTLMin) * time.Minute,
+		Currency:        steamCurrency,
+		HistoryBudget:   historyBudget,
 		MinItemValueUSD: minItemValue,
 	}
 
