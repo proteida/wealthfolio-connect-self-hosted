@@ -53,10 +53,13 @@ func (h *SteamPriceHandler) RegisterPublicAPIRoutes(r chi.Router) {
 }
 
 type steamCurrentPriceDTO struct {
-	MarketHashName string  `json:"market_hash_name"`
-	Price          float64 `json:"price"`
-	PriceType      string  `json:"price_type"`
-	Currency       string  `json:"currency"`
+	MarketHashName string    `json:"market_hash_name"`
+	Price          float64   `json:"price"`
+	PriceType      string    `json:"price_type"`
+	Currency       string    `json:"currency"`
+	Timestamp      time.Time `json:"timestamp"`
+	TimestampUnix  int64     `json:"timestamp_unix"`
+	Date           string    `json:"date"`
 }
 
 // GetCurrent returns the current Steam market price for ?name=.
@@ -71,9 +74,11 @@ func (h *SteamPriceHandler) GetCurrent(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteError(w, http.StatusNotFound, "not_found", "PRICE_NOT_FOUND", "no current price for "+name)
 		return
 	}
+	now := time.Now().UTC()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(steamCurrentPriceDTO{
 		MarketHashName: name, Price: price, PriceType: priceType, Currency: "USD",
+		Timestamp: now, TimestampUnix: now.Unix(), Date: now.Format("2006-01-02"),
 	})
 }
 
