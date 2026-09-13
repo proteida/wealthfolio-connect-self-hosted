@@ -117,4 +117,17 @@ var _ = Describe("Steam price endpoints", func() {
 		r.ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusBadRequest))
 	})
+
+	It("accepts unix seconds and YYYY-MM-DD bounds", func() {
+		for _, q := range []string{
+			"/steam/prices/history?name=AK&from=1746057600&to=1780272000",
+			"/steam/prices/history?name=AK&from=2025-05-01&to=2025-06-01",
+			"/steam/prices/history?name=AK&from=2025-05-01T00:00:00Z&to=2025-06-01",
+		} {
+			req := httptest.NewRequest(http.MethodGet, q, nil)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+			Expect(rec.Code).To(Equal(http.StatusOK))
+		}
+	})
 })

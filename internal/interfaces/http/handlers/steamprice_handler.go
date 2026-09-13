@@ -3,6 +3,8 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -87,7 +89,9 @@ type steamHistoryDTO struct {
 }
 
 // GetHistory returns stored historical points for ?name=&from=&to=
-// (RFC3339 bounds, both optional; defaults to the last 90 days).
+// (bounds are optional; defaults to the last 90 days). Each bound
+// accepts RFC3339 (2025-05-01T00:00:00Z), unix seconds (1746057600)
+// or a calendar date (2025-05-01, midnight UTC).
 func (h *SteamPriceHandler) GetHistory(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	if name == "" {
@@ -97,17 +101,17 @@ func (h *SteamPriceHandler) GetHistory(w http.ResponseWriter, r *http.Request) {
 	to := time.Now().UTC()
 	from := to.Add(-90 * 24 * time.Hour)
 	if v := r.URL.Query().Get("from"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
+		t, err := parseTimeBound(v)
 		if err != nil {
-			middleware.WriteError(w, http.StatusBadRequest, "invalid_request", "INVALID_FROM", "from must be RFC3339")
+			middleware.WriteError(w, http.StatusBadRequest, "invalid_request", "INVALID_FROM", "from must be RFC3339, unix seconds or YYYY-MM-DD")
 			return
 		}
 		from = t
 	}
 	if v := r.URL.Query().Get("to"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
+		t, err := parseTimeBound(v)
 		if err != nil {
-			middleware.WriteError(w, http.StatusBadRequest, "invalid_request", "INVALID_TO", "to must be RFC3339")
+			middleware.WriteError(w, http.StatusBadRequest, "invalid_request", "INVALID_TO", "to must be RFC3339, unix seconds or YYYY-MM-DD")
 			return
 		}
 		to = t
@@ -124,4 +128,23 @@ func (h *SteamPriceHandler) GetHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+// parseTimeBound accepts RFC3339, unix seconds (%s) or YYYY-MM-DD
+// (midnight UTC). Anything else is an error.
+func parseTimeBound(v string) (time.Time, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return time.Time{}, strconv.ErrSyntax
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t, nil
+	}
+	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return time.Unix(secs, 0).UTC(), nil
+	}
+	if t, err := time.Parse("2006-01-02", v); err == nil {
+		return t.UTC(), nil
+	}
+	return time.Time{}, strconv.ErrSyntax
 }
