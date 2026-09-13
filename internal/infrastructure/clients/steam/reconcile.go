@@ -374,6 +374,7 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 		return price, priceType, ok
 	}
 	pricing := true
+	unpriced := 0
 	for _, r := range resolved {
 		if pricing && c.priceFails.Load() >= priceFailBreaker {
 			c.log.Warn().Msg("steam price provider failing repeatedly; leaving remaining items unvalued")
@@ -383,7 +384,15 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 		var priceType string
 		var valued bool
 		if pricing {
-			price, priceType, valued = priceOf(r.Asset.MarketHashName)
+			if !pricable(r.Asset) {
+				// Unmarketable collectibles (Veteran Coins, drops, empty
+				// names from partial pages) never have a market quote:
+				// leave zero-price without burning a provider call or
+				// tripping the breaker.
+				unpriced++
+			} else {
+				price, priceType, valued = priceOf(r.Asset.MarketHashName)
+			}
 		}
 		if c.cfg.MinItemValueUSD > 0 && valued && !before[r.Asset.AssetID] &&
 			float64(r.Asset.Amount)*price < c.cfg.MinItemValueUSD {
@@ -402,6 +411,9 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 	if skipped > 0 {
 		c.log.Info().Int("skipped_dust", skipped).Float64("threshold", c.cfg.MinItemValueUSD).Msg("steam items below value threshold excluded")
 	}
+	if unpriced > 0 {
+		c.log.Info().Int("unpriced_unmarketable", unpriced).Msg("steam items without market quotes left zero-price")
+	}
 	phased := time.Now()
 	c.backfillPriceHistory(ctx, resolved)
 	c.log.Info().Int("positions", len(positions)).Int("activities", len(activities)).Dur("assemble", time.Since(phased)).Msg("steam snapshot assembled")
@@ -418,10 +430,20 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 	}, nil
 }
 
+// pricable reports whether an item can ever have a Steam market quote:
+// it needs a name and the marketable flag from its description.
+// Unmarketable collectibles (Veteran Coins, non-tradable drops) and
+// description-less stragglers from partial pages stay zero-price by
+// design and must never consume provider calls, breaker budget or
+// history budget.
+func pricable(it InventoryItem) bool {
+	return it.MarketHashName != "" && it.Marketable
+}
+
 // backfillPriceHistory pulls full histories for up to HistoryBudget
 // distinct names lacking recent coverage. Each name costs one provider
 // call; covered names (a stored point within historyLookback) cost only a
-// database read.
+// database read. Unmarketable names cost nothing and consume no budget.
 func (c *Client) backfillPriceHistory(ctx context.Context, resolved []Resolution) {
 	if c.priceHistory == nil || c.cfg.HistoryBudget <= 0 {
 		return
@@ -430,8 +452,11 @@ func (c *Client) backfillPriceHistory(ctx context.Context, resolved []Resolution
 	budget := c.cfg.HistoryBudget
 	now := time.Now().UTC()
 	for _, r := range resolved {
+		if !pricable(r.Asset) {
+			continue
+		}
 		name := r.Asset.MarketHashName
-		if name == "" || seen[name] {
+		if seen[name] {
 			continue
 		}
 		seen[name] = true

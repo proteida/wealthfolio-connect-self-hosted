@@ -477,3 +477,59 @@ var _ = Describe("Price circuit breaker", func() {
 		Expect(c.priceFails.Load() >= priceFailBreaker).To(BeTrue())
 	})
 })
+
+var _ = Describe("Unmarketable pricing", func() {
+	It("classifies pricable items by name and marketable flag", func() {
+		Expect(pricable(InventoryItem{MarketHashName: "AK", Marketable: true})).To(BeTrue())
+		Expect(pricable(InventoryItem{MarketHashName: "5 Year Veteran Coin", Marketable: false})).To(BeFalse())
+		Expect(pricable(InventoryItem{MarketHashName: "", Marketable: true})).To(BeFalse())
+		Expect(pricable(InventoryItem{})).To(BeFalse())
+	})
+
+	It("leaves unmarketable items zero-price without provider calls", func() {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer GinkgoRecover()
+			if strings.HasPrefix(r.URL.Path, "/inventory/") {
+				writeJSON(w, map[string]any{
+					"assets": []any{
+						map[string]any{"assetid": "1", "classid": "1", "instanceid": "0", "amount": "1"},
+						map[string]any{"assetid": "2", "classid": "2", "instanceid": "0", "amount": "1"},
+					},
+					"descriptions": []any{
+						map[string]any{"classid": "1", "instanceid": "0", "market_hash_name": "AK-47 | Redline", "marketable": 1, "tradable": 1},
+						map[string]any{"classid": "2", "instanceid": "0", "market_hash_name": "5 Year Veteran Coin", "marketable": 0, "tradable": 1},
+					},
+					"success": 1,
+				})
+				return
+			}
+			if r.URL.Path == "/market/priceoverview/" {
+				writeJSON(w, map[string]any{"success": true, "median_price": "$10.00"})
+				return
+			}
+			writeJSON(w, map[string]any{
+				"html": "", "descriptions": map[string]any{}, "apps": []any{},
+				"response": map[string]any{"more": false, "trades": []any{}},
+			})
+		}))
+		defer server.Close()
+		cfg := defaultClientConfig()
+		cfg.SteamID = "76561198000000000"
+		cfg.MinInterval = time.Millisecond
+		cfg.CommunityBase = server.URL
+		cfg.StoreBase = server.URL
+		c := New(cfg, server.Client())
+		c.SetSteamStore(&stubSteamStore{})
+		snap, err := c.Fetch(context.Background())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.Holdings[0].Positions).To(HaveLen(2))
+		// Marketable item priced, veteran coin stays zero-price but visible.
+		bySymbol := map[string]float64{}
+		for _, p := range snap.Holdings[0].Positions {
+			bySymbol[p.Symbol.Symbol] = p.Price
+		}
+		Expect(bySymbol["AK-47 | Redline"]).To(BeNumerically("~", 10.0, 1e-9))
+		Expect(bySymbol["5 Year Veteran Coin"]).To(Equal(0.0))
+		Expect(c.priceFails.Load()).To(Equal(int64(0)))
+	})
+})
