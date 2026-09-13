@@ -78,8 +78,10 @@ func (h *SteamPriceHandler) GetCurrent(w http.ResponseWriter, r *http.Request) {
 }
 
 type steamPricePointDTO struct {
-	Timestamp time.Time `json:"timestamp"`
-	Price     float64   `json:"price"`
+	Timestamp     time.Time `json:"timestamp"`
+	TimestampUnix int64     `json:"timestamp_unix"`
+	Date          string    `json:"date"`
+	Price         float64   `json:"price"`
 }
 
 type steamHistoryDTO struct {
@@ -124,7 +126,10 @@ func (h *SteamPriceHandler) GetHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	out := steamHistoryDTO{MarketHashName: name, Currency: curr, Points: []steamPricePointDTO{}}
 	for _, p := range rows {
-		out.Points = append(out.Points, steamPricePointDTO{Timestamp: p.Timestamp, Price: p.Price})
+		ts := p.Timestamp.UTC()
+		out.Points = append(out.Points, steamPricePointDTO{
+			Timestamp: ts, TimestampUnix: ts.Unix(), Date: ts.Format("2006-01-02"), Price: p.Price,
+		})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
