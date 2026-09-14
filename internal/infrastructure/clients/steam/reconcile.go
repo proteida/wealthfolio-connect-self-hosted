@@ -464,8 +464,12 @@ func (c *Client) backfillPriceHistory(ctx context.Context, resolved []Resolution
 			continue
 		}
 		asset, curr := PriceAssetKey(name, c.cfg.Currency)
+		// A single recent current-quote row (written by pricing every
+		// sync) must NOT count as history coverage, or the backfill
+		// would never fire for priced items. Covered means a real
+		// series is stored.
 		covered := false
-		if pts, err := c.priceHistory.List(ctx, asset, curr, now.Add(-historyLookback), now); err == nil && len(pts) > 0 {
+		if pts, err := c.priceHistory.List(ctx, asset, curr, now.Add(-historyLookback), now); err == nil && len(pts) >= minHistoryPoints {
 			covered = true
 		}
 		if covered {
@@ -481,9 +485,13 @@ func (c *Client) backfillPriceHistory(ctx context.Context, resolved []Resolution
 	}
 }
 
-// historyLookback bounds the coverage check: a name with any stored point
-// in this window skips the backfill fetch.
+// historyLookback bounds the coverage check window. minHistoryPoints is
+// how many stored points in that window count as a real series: current
+// quotes alone (1-2 rows from pricing) never satisfy it, so backfill
+// keeps firing until a full pricehistory lands.
 const historyLookback = 30 * 24 * time.Hour
+
+const minHistoryPoints = 10
 
 // snapshot write fails the sync (durable state matters); provenance rows
 // are best-effort and only warn, so a flaky history endpoint never blocks

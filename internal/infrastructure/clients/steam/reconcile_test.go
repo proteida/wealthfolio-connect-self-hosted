@@ -464,6 +464,51 @@ var _ = Describe("Value filter and history backfill", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(priceStore.puts).To(BeNumerically(">", 0))
 	})
+
+	It("does not mistake current-quote rows for history coverage", func() {
+		hits := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer GinkgoRecover()
+			if r.URL.Path == "/market/pricehistory/" {
+				hits++
+				writeJSON(w, map[string]any{"success": true, "prices": []any{
+					[]any{"8 May, 2025", 100.0, "5"},
+				}})
+				return
+			}
+			writeJSON(w, map[string]any{"success": false})
+		}))
+		defer srv.Close()
+		mkClient := func(store *stubPriceStore) *Client {
+			c := New(ClientConfig{
+				SteamID: "1", HistoryBudget: 5, Currency: 1,
+				CommunityBase: srv.URL, StoreBase: srv.URL,
+				MinInterval: time.Millisecond,
+			}, srv.Client())
+			c.SetPriceHistoryStore(store)
+			c.cfg.Session = "sessionid=x"
+			return c
+		}
+		asset, curr := PriceAssetKey("AK-47 | Redline", 1)
+		resolved := []Resolution{{Asset: InventoryItem{MarketHashName: "AK-47 | Redline", Marketable: true}}}
+		// Two recency rows: backfill must still fetch.
+		few := newStubPriceStore()
+		Expect(few.Upsert(context.Background(), []repository.HistoricalPrice{
+			{Asset: asset, Timestamp: time.Now().UTC().Add(-time.Hour), Currency: curr, Price: 10, Source: "steam_market"},
+			{Asset: asset, Timestamp: time.Now().UTC(), Currency: curr, Price: 10, Source: "steam_market"},
+		})).To(Succeed())
+		mkClient(few).backfillPriceHistory(context.Background(), resolved)
+		Expect(hits).To(Equal(1))
+		// A real series: no fetch.
+		many := newStubPriceStore()
+		for i := 0; i < minHistoryPoints; i++ {
+			Expect(many.Upsert(context.Background(), []repository.HistoricalPrice{
+				{Asset: asset, Timestamp: time.Now().UTC().Add(-time.Duration(i) * 24 * time.Hour), Currency: curr, Price: 10, Source: "steam_market"},
+			})).To(Succeed())
+		}
+		mkClient(many).backfillPriceHistory(context.Background(), resolved)
+		Expect(hits).To(Equal(1))
+	})
 })
 
 var _ = Describe("Price circuit breaker", func() {

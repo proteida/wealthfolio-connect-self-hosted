@@ -130,8 +130,18 @@ func (s *stubPriceStore) Get(_ context.Context, asset, currency string, at time.
 	}
 	return *best, nil
 }
-func (s *stubPriceStore) List(_ context.Context, _, _ string, _, _ time.Time) ([]repository.HistoricalPrice, error) {
-	return nil, nil
+func (s *stubPriceStore) List(_ context.Context, asset, currency string, from, to time.Time) ([]repository.HistoricalPrice, error) {
+	var out []repository.HistoricalPrice
+	for _, r := range s.rows {
+		if r.Asset != asset || r.Currency != currency {
+			continue
+		}
+		if r.Timestamp.Before(from) || r.Timestamp.After(to) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }
 func (s *stubPriceStore) Upsert(_ context.Context, ps []repository.HistoricalPrice) error {
 	s.puts++
