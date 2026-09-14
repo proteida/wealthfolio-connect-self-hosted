@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -121,6 +122,12 @@ var _ = Describe("Inventory history", func() {
 		Expect(parseSteamTime("1730000000").Unix()).To(Equal(int64(1730000000)))
 		Expect(parseSteamTime("2025-05-08 13:22:00").Year()).To(Equal(2025))
 		Expect(parseSteamTime("3 Aug, 2026 1:36am").Year()).To(Equal(2026))
+		// Real /market/pricehistory/ shape: "Sep 13 2025 01: +0".
+		d := parseSteamTime("Sep 13 2025 01: +0")
+		Expect(d.IsZero()).To(BeFalse())
+		Expect(d.Year()).To(Equal(2025))
+		Expect(d.Month()).To(Equal(time.September))
+		Expect(d.Day()).To(Equal(13))
 		Expect(parseSteamTime("bogus").IsZero()).To(BeTrue())
 		Expect(parseSteamTime("").IsZero()).To(BeTrue())
 	})

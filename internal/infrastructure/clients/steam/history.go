@@ -281,6 +281,8 @@ func parseSteamTime(s string) time.Time {
 	for _, layout := range []string{
 		"2006-01-02 15:04:05", time.RFC3339, "Jan 2, 2006",
 		"2 Jan, 2006", "Jan 2 2006", "2 Jan, 2006 3:04pm",
+		// /market/pricehistory/ date shape, e.g. "Sep 13 2025 01: +0".
+		"Jan 02 2006 15: +0", "Jan 2 2006 15: +0",
 	} {
 		if t, err := time.Parse(layout, s); err == nil {
 			return t.UTC()
