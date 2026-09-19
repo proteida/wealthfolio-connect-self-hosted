@@ -116,6 +116,7 @@ type Account struct {
 	FirstTxDate            *time.Time
 	InitialTxSyncDone      bool
 	InitialHoldingsDone    bool
+	ActivitySyncOffset     int
 	OwnerUserID            string
 	OwnerFullName          string
 	OwnerEmail             string
@@ -142,6 +143,8 @@ const (
 	ActivityOptionSell       ActivityType = "OPTION_SELL"
 	ActivityOptionExpiry     ActivityType = "OPTION_EXPIRY"
 	ActivityOptionAssignment ActivityType = "OPTION_ASSIGNMENT"
+	ActivityOptionExercise   ActivityType = "OPTION_EXERCISE"
+	ActivityUnknown          ActivityType = "UNKNOWN"
 )
 
 // Activity is one line of trade history.
@@ -149,6 +152,9 @@ type Activity struct {
 	ID        string
 	AccountID string
 	Symbol    *Symbol
+	// CurrencySymbol is the denomination instrument for forex-style
+	// activities imported from multi-currency venues (e.g. SnapTrade).
+	CurrencySymbol *Symbol
 	// IsExternal marks transfers crossing the tracked-account boundary
 	// (counterparty is none of our wallets). The app persists it as
 	// metadata.flow.is_external; tracked-counterparty legs send explicit
@@ -175,6 +181,7 @@ type Activity struct {
 	SourceSystem        string
 	SourceRecordID      string
 	SourceGroupID       string
+	SourceFingerprint   string
 	NeedsReview         bool
 }
 

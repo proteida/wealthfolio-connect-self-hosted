@@ -3,6 +3,8 @@ package sync_test
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +32,47 @@ type fakeClient struct {
 	id   string
 	snap domainsync.BrokerSnapshot
 	err  error
+}
+
+type blockingClient struct {
+	id      string
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	calls   atomic.Int32
+}
+
+func (f *blockingClient) ID() string { return f.id }
+func (f *blockingClient) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
+	f.calls.Add(1)
+	f.once.Do(func() { close(f.started) })
+	select {
+	case <-f.release:
+		return domainsync.BrokerSnapshot{}, errors.New("released")
+	case <-ctx.Done():
+		return domainsync.BrokerSnapshot{}, ctx.Err()
+	}
+}
+
+type pagedClient struct {
+	snap  domainsync.BrokerSnapshot
+	pages []domainsync.ActivityPage
+}
+
+func (f *pagedClient) ID() string { return "paged" }
+func (f *pagedClient) Fetch(context.Context) (domainsync.BrokerSnapshot, error) {
+	return f.snap, nil
+}
+func (f *pagedClient) FetchAccountSnapshot(context.Context) (domainsync.BrokerSnapshot, error) {
+	return f.snap, nil
+}
+func (f *pagedClient) StreamActivities(ctx context.Context, _ []domainsync.ActivitySyncState, sink domainsync.ActivitySink) error {
+	for _, page := range f.pages {
+		if err := sink(ctx, page); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (f *fakeClient) ID() string { return f.id }
@@ -200,8 +243,7 @@ var _ = Describe("sync.Service", func() {
 
 	It("logs and continues when a client fails", func() {
 		// The broken client fails before any persistence; the healthy
-		// empty client only upserts its connection.
-		conns.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil)
+		// empty client persists nothing (empty connections are skipped).
 		s := build(
 			&fakeClient{id: "broken", err: errors.New("boom")},
 			&fakeClient{id: "ok", snap: domainsync.BrokerSnapshot{}},
@@ -210,8 +252,9 @@ var _ = Describe("sync.Service", func() {
 	})
 
 	It("propagates persistence errors as logs when another client succeeds", func() {
+		// Only the failing client reaches the connection upsert; the empty
+		// snapshot client persists nothing.
 		conns.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(errors.New("db"))
-		conns.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil)
 		s := build(
 			&fakeClient{id: "x", snap: sampleSnap()},
 			&fakeClient{id: "ok", snap: domainsync.BrokerSnapshot{}},
@@ -226,8 +269,69 @@ var _ = Describe("sync.Service", func() {
 		Expect(s.LastRun()).To(BeZero())
 	})
 
+	It("starts unrelated clients without waiting for a throttled client", func() {
+		slow := &blockingClient{id: "slow", started: make(chan struct{}), release: make(chan struct{})}
+		fastStarted := make(chan struct{})
+		fast := &fakeClient{id: "fast", err: errors.New("fast failure")}
+		wrappedFast := &notifyingClient{BrokerClient: fast, started: fastStarted}
+		s := build(slow, wrappedFast)
+		done := make(chan struct{})
+		go func() {
+			_ = s.RunOnce(context.Background())
+			close(done)
+		}()
+		Eventually(fastStarted, time.Second).Should(BeClosed())
+		Consistently(done, 20*time.Millisecond).ShouldNot(BeClosed())
+		close(slow.release)
+		Eventually(done, time.Second).Should(BeClosed())
+	})
+
+	It("suppresses overlapping runs of the same client", func() {
+		client := &blockingClient{id: "one", started: make(chan struct{}), release: make(chan struct{})}
+		s := build(client)
+		firstDone := make(chan struct{})
+		go func() { _ = s.RunOnce(context.Background()); close(firstDone) }()
+		Eventually(client.started, time.Second).Should(BeClosed())
+		secondDone := make(chan struct{})
+		go func() { _ = s.RunOnce(context.Background()); close(secondDone) }()
+		Eventually(secondDone, time.Second).Should(BeClosed())
+		Expect(client.calls.Load()).To(Equal(int32(1)))
+		close(client.release)
+		Eventually(firstDone, time.Second).Should(BeClosed())
+	})
+
+	It("persists paged activities and advances the checkpoint after the page", func() {
+		snap := domainsync.BrokerSnapshot{
+			Connection: brokerage.Connection{ID: "c"},
+			Accounts:   []brokerage.Account{{ID: "a", SyncEnabled: true}},
+		}
+		conns.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil)
+		accs.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil)
+		// One lookup serves the snapshot disabled-account gate, a second
+		// builds the paged activity sync state.
+		accs.EXPECT().Get(gomock.Any(), "a").Times(2).Return(brokerage.Account{ID: "a", SyncEnabled: true}, nil)
+		acts.EXPECT().UpsertBatch(gomock.Any(), "a", gomock.Any()).Return(nil)
+		accs.EXPECT().UpdateActivitySyncProgress(gomock.Any(), "a", gomock.Any()).DoAndReturn(
+			func(_ context.Context, _ string, progress repository.ActivitySyncProgress) error {
+				Expect(progress.CompletedAt).NotTo(BeNil())
+				return nil
+			},
+		)
+		s := build(&pagedClient{snap: snap, pages: []domainsync.ActivityPage{{
+			AccountID: "a", Items: []brokerage.Activity{{ID: "activity"}}, Complete: true,
+		}}})
+		Expect(s.RunOnce(context.Background())).To(Succeed())
+	})
+
+	It("propagates persistence errors as logs while sibling clients succeed", func() {
+		conns.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(errors.New("db"))
+		s := build(&fakeClient{id: "x", snap: sampleSnap()})
+		Expect(s.RunOnce(context.Background())).To(MatchError(ContainSubstring("all 1 brokers failed")))
+		Expect(s.LastRun()).To(BeZero())
+	})
+
 	It("propagates account upsert errors", func() {
-		conns.EXPECT().Upsert(gomock.Any(), gomock.Any()).Times(2).Return(nil)
+		conns.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil)
 		accs.EXPECT().Get(gomock.Any(), "a").Return(brokerage.Account{}, repository.ErrNotFound)
 		accs.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(errors.New("db"))
 		s := build(
@@ -238,7 +342,7 @@ var _ = Describe("sync.Service", func() {
 	})
 
 	It("propagates holdings replace errors", func() {
-		conns.EXPECT().Upsert(gomock.Any(), gomock.Any()).Times(2).Return(nil)
+		conns.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil)
 		accs.EXPECT().Get(gomock.Any(), "a").Return(brokerage.Account{}, repository.ErrNotFound)
 		accs.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil)
 		hlds.EXPECT().Replace(gomock.Any(), gomock.Any()).Return(errors.New("db"))
@@ -250,7 +354,7 @@ var _ = Describe("sync.Service", func() {
 	})
 
 	It("propagates activities upsert errors", func() {
-		conns.EXPECT().Upsert(gomock.Any(), gomock.Any()).Times(2).Return(nil)
+		conns.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil)
 		accs.EXPECT().Get(gomock.Any(), "a").Return(brokerage.Account{}, repository.ErrNotFound)
 		accs.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil)
 		hlds.EXPECT().Replace(gomock.Any(), gomock.Any()).Return(nil)
@@ -283,6 +387,17 @@ var _ = Describe("sync.Service", func() {
 		Expect(app.Stop(context.Background())).To(Succeed())
 	})
 })
+
+type notifyingClient struct {
+	domainsync.BrokerClient
+	started chan struct{}
+	once    sync.Once
+}
+
+func (c *notifyingClient) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
+	c.once.Do(func() { close(c.started) })
+	return c.BrokerClient.Fetch(ctx)
+}
 
 var _ = Describe("AsBrokerClient", func() {
 	It("annotates a constructor", func() {

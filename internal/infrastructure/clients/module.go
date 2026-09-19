@@ -22,6 +22,7 @@ import (
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/hyperliquid"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/ibkr"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/okx"
+	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/snaptrade"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/steam"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/ton"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/config"
@@ -31,14 +32,35 @@ import (
 //
 // Broker connections retain their existing wiring. Crypto integrations are
 // flattened into the same group only when their credentials are configured.
+// The optional SnapTrade importer joins the same flattened group when enabled.
 var Module = fx.Module("infrastructure.clients",
 	fx.Provide(
 		appsync.AsBrokerClient(NewFutu),
 		appsync.AsBrokerClient(NewIBKR),
 		NewCryptoClients,
+		NewSnapTrade,
 		AsSteamPriceProvider(NewSteamPriceProvider),
 	),
 )
+
+// SnapTradeOut conditionally contributes the enabled SnapTrade client to the
+// shared broker_clients group. An empty slice cleanly disables the integration.
+type SnapTradeOut struct {
+	fx.Out
+	Clients []domainsync.BrokerClient `group:"broker_clients,flatten"`
+}
+
+// NewSnapTrade builds the optional SnapTrade client from validated config.
+func NewSnapTrade(cfg *config.Config, log zerolog.Logger) (SnapTradeOut, error) {
+	if cfg == nil || !cfg.SnapTrade.Enabled {
+		return SnapTradeOut{}, nil
+	}
+	client, err := snaptrade.New(cfg.SnapTrade, log.With().Str("client", "snaptrade").Logger(), nil)
+	if err != nil {
+		return SnapTradeOut{}, err
+	}
+	return SnapTradeOut{Clients: []domainsync.BrokerClient{client}}, nil
+}
 
 // NewFutu builds the Futu BrokerClient from config.
 func NewFutu(cfg *config.Config, log zerolog.Logger) *futu.Client {

@@ -199,4 +199,20 @@ var _ = Describe("ActivityRepository", func() {
 		err := repo.UpsertBatch(ctx, "acc", []brokerage.Activity{{ID: "x", SourceRecordID: "y", TradeDate: now}})
 		Expect(err).To(MatchError(ContainSubstring("dup")))
 	})
+
+	It("reuses an existing source identity when a SnapTrade ID changes but the fingerprint is stable", func() {
+		mock.ExpectQuery(rx(`SELECT "source_record_id","source_fingerprint" FROM "activities"`)).
+			WillReturnRows(sqlmock.NewRows([]string{"source_record_id", "source_fingerprint"}).
+				AddRow("snaptrade:old-id", "stable-fingerprint"))
+		mock.ExpectBegin()
+		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+		err := repo.UpsertBatch(ctx, "acc", []brokerage.Activity{{
+			ID: "new-id", SourceRecordID: "snaptrade:new-id", SourceFingerprint: "stable-fingerprint",
+			TradeDate: now, Type: brokerage.ActivityDividend,
+		}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mock.ExpectationsWereMet()).To(Succeed())
+	})
 })
