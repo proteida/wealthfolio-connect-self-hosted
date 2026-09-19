@@ -48,8 +48,11 @@ type Service struct {
 	clients     []domainsync.BrokerClient
 	interval    time.Duration
 	runMu       sync.Mutex
-	mu          sync.Mutex
+	mu          sync.RWMutex
 	lastRun     time.Time
+	runningMu   sync.Mutex
+	running     map[string]bool
+	workers     sync.WaitGroup
 }
 
 // NewService constructs a Service from fx-injected params. The cadence
@@ -68,6 +71,7 @@ func NewService(p Params) *Service {
 		holdings:    p.Holdings,
 		clients:     p.Clients,
 		interval:    interval,
+		running:     make(map[string]bool),
 	}
 }
 
@@ -76,31 +80,53 @@ func (s *Service) SetInterval(d time.Duration) { s.interval = d }
 
 // LastRun returns the timestamp of the most recent successful run.
 func (s *Service) LastRun() time.Time {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.lastRun
 }
 
-// RunOnce executes every client sequentially, persisting partial results so
+// RunOnce executes every client in parallel, persisting partial results so
 // a slow/broken upstream does not stall the others. It reports success when
 // at least one client synced; when every client fails the run is an error
 // and LastRun does not advance, distinguishing attempts from synchronization.
+// Manual connection refreshes and the scheduler share the runMu gate:
+// overlapping full runs coalesce instead of queueing another complete scan,
+// while duplicate runs of the same client are suppressed via beginClient.
 func (s *Service) RunOnce(ctx context.Context) error {
-	// Manual connection refreshes and the scheduler share this gate. Coalesce
-	// overlapping requests instead of queueing another complete upstream scan.
 	if !s.runMu.TryLock() {
 		return nil
 	}
 	defer s.runMu.Unlock()
-	var errs []error
+	type clientResult struct {
+		id  string
+		err error
+	}
+	results := make(chan clientResult, len(s.clients))
+	var wg sync.WaitGroup
 	for _, c := range s.clients {
-		if err := s.syncOne(ctx, c); err != nil {
-			s.log.Error().Err(err).Str("client", c.ID()).Msg("upstream sync failed")
-			errs = append(errs, fmt.Errorf("%s: %w", c.ID(), err))
+		client := c
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := s.runClient(ctx, client)
+			if err != nil {
+				s.log.Error().Err(err).Str("client", client.ID()).Msg("upstream sync failed")
+			}
+			results <- clientResult{id: client.ID(), err: err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	var errs []error
+	failed := 0
+	for r := range results {
+		if r.err != nil {
+			failed++
+			errs = append(errs, fmt.Errorf("%s: %w", r.id, r.err))
 		}
 	}
-	if len(s.clients) > 0 && len(errs) == len(s.clients) {
-		return fmt.Errorf("sync: all %d brokers failed: %w", len(errs), errors.Join(errs...))
+	if len(s.clients) > 0 && failed == len(s.clients) {
+		return fmt.Errorf("sync: all %d brokers failed: %w", failed, errors.Join(errs...))
 	}
 	s.mu.Lock()
 	s.lastRun = time.Now().UTC()
@@ -108,13 +134,93 @@ func (s *Service) RunOnce(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) syncOne(ctx context.Context, c domainsync.BrokerClient) error {
-	snap, err := c.Fetch(ctx)
-	if err != nil {
-		return fmt.Errorf("fetch: %w", err)
+func (s *Service) runClient(ctx context.Context, c domainsync.BrokerClient) error {
+	if !s.beginClient(c.ID()) {
+		s.log.Debug().Str("client", c.ID()).Msg("upstream sync already running; skipping overlapping run")
+		return nil
 	}
-	if err := s.connections.Upsert(ctx, snap.Connection); err != nil {
-		return fmt.Errorf("upsert connection: %w", err)
+	defer s.endClient(c.ID())
+	err := s.syncOne(ctx, c)
+	if err != nil && ctx.Err() == nil {
+		return err
+	}
+	if ctx.Err() == nil {
+		s.mu.Lock()
+		s.lastRun = time.Now().UTC()
+		s.mu.Unlock()
+	}
+	return nil
+}
+
+func (s *Service) beginClient(id string) bool {
+	s.runningMu.Lock()
+	defer s.runningMu.Unlock()
+	if s.running[id] {
+		return false
+	}
+	s.running[id] = true
+	return true
+}
+
+func (s *Service) endClient(id string) {
+	s.runningMu.Lock()
+	delete(s.running, id)
+	s.runningMu.Unlock()
+}
+
+func (s *Service) syncOne(ctx context.Context, c domainsync.BrokerClient) error {
+	var (
+		snap     domainsync.BrokerSnapshot
+		fetchErr error
+	)
+	paged, streamsActivities := c.(domainsync.PagedActivityClient)
+	if streamsActivities {
+		snap, fetchErr = paged.FetchAccountSnapshot(ctx)
+	} else {
+		snap, fetchErr = c.Fetch(ctx)
+	}
+	if fetchErr != nil && !hasSnapshotData(snap) {
+		return fmt.Errorf("fetch: %w", fetchErr)
+	}
+	if err := s.persistSnapshot(ctx, c, snap); err != nil {
+		return errors.Join(fetchErr, err)
+	}
+	if !streamsActivities {
+		return fetchErr
+	}
+
+	states := make([]domainsync.ActivitySyncState, 0, len(snap.Accounts))
+	for _, acc := range snap.Accounts {
+		stored, err := s.accounts.Get(ctx, acc.ID)
+		if err != nil {
+			return errors.Join(fetchErr, fmt.Errorf("load activity sync state for %s: %w", acc.ID, err))
+		}
+		if !stored.SyncEnabled {
+			continue
+		}
+		states = append(states, domainsync.ActivitySyncState{
+			AccountID: stored.ID, InitialSyncCompleted: stored.InitialTxSyncDone,
+			LastSuccessfulSync: stored.LastTxSync, NextOffset: stored.ActivitySyncOffset,
+		})
+	}
+	streamErr := paged.StreamActivities(ctx, states, s.persistActivityPage)
+	return errors.Join(fetchErr, streamErr)
+}
+
+func hasSnapshotData(snap domainsync.BrokerSnapshot) bool {
+	return snap.Connection.ID != "" || len(snap.Connections) > 0 || len(snap.Accounts) > 0 ||
+		len(snap.Holdings) > 0 || len(snap.Activities) > 0
+}
+
+func (s *Service) persistSnapshot(ctx context.Context, c domainsync.BrokerClient, snap domainsync.BrokerSnapshot) error {
+	connections := snap.Connections
+	if len(connections) == 0 && snap.Connection.ID != "" {
+		connections = []brokerage.Connection{snap.Connection}
+	}
+	for _, conn := range connections {
+		if err := s.connections.Upsert(ctx, conn); err != nil {
+			return fmt.Errorf("upsert connection: %w", err)
+		}
 	}
 	// SyncEnabled is user-owned state: a stored false suppresses every
 	// upstream write for that account. Unknown accounts (and read errors)
@@ -213,37 +319,93 @@ func (s *Service) syncOne(ctx context.Context, c domainsync.BrokerClient) error 
 	return nil
 }
 
+func (s *Service) persistActivityPage(ctx context.Context, page domainsync.ActivityPage) error {
+	if len(page.Items) > 0 {
+		if err := s.activities.UpsertBatch(ctx, page.AccountID, page.Items); err != nil {
+			return fmt.Errorf("upsert activity page: %w", err)
+		}
+	}
+	progress := repository.ActivitySyncProgress{
+		NextOffset: page.NextOffset, FirstTransactionDate: page.FirstTransactionDate,
+	}
+	if page.Complete {
+		completedAt := time.Now().UTC()
+		progress.CompletedAt = &completedAt
+	}
+	if err := s.accounts.UpdateActivitySyncProgress(ctx, page.AccountID, progress); err != nil {
+		return fmt.Errorf("update activity sync checkpoint: %w", err)
+	}
+	return nil
+}
+
 // StartSync wires the lifecycle so the goroutine is spawned at OnStart and
 // canceled at OnStop.
 func StartSync(lc fx.Lifecycle, s *Service) {
 	ctx, cancel := context.WithCancel(context.Background())
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
-			go s.loop(ctx)
+			s.start(ctx)
 			return nil
 		},
-		OnStop: func(_ context.Context) error {
+		OnStop: func(stopCtx context.Context) error {
 			cancel()
-			return nil
+			return s.wait(stopCtx)
 		},
 	})
 }
 
-func (s *Service) loop(ctx context.Context) {
-	if err := s.RunOnce(ctx); err != nil && ctx.Err() == nil {
-		s.log.Error().Err(err).Msg("initial sync run failed")
+func (s *Service) start(ctx context.Context) {
+	for _, c := range s.clients {
+		client := c
+		s.workers.Add(1)
+		go func() {
+			defer s.workers.Done()
+			s.loopClient(ctx, client)
+		}()
 	}
-	t := time.NewTicker(s.interval)
+}
+
+func (s *Service) loopClient(ctx context.Context, c domainsync.BrokerClient) {
+	s.runAndLog(ctx, c)
+	interval := s.interval
+	if scheduled, ok := c.(domainsync.ScheduledBrokerClient); ok && scheduled.SyncInterval() > 0 {
+		interval = scheduled.SyncInterval()
+	}
+	if interval <= 0 {
+		interval = 4 * time.Hour
+	}
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := s.RunOnce(ctx); err != nil && ctx.Err() == nil {
-				s.log.Error().Err(err).Msg("scheduled sync run failed")
-			}
+			s.runAndLog(ctx, c)
 		}
+	}
+}
+
+// runAndLog executes one client sync outside RunOnce's error aggregation
+// (the background scheduler loops). Failures are logged here because there
+// is no caller to propagate them to; shutdown cancellation is quiet.
+func (s *Service) runAndLog(ctx context.Context, c domainsync.BrokerClient) {
+	if err := s.runClient(ctx, c); err != nil && ctx.Err() == nil {
+		s.log.Error().Err(err).Str("client", c.ID()).Msg("upstream sync failed")
+	}
+}
+
+func (s *Service) wait(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		s.workers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

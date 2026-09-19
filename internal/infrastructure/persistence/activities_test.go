@@ -169,9 +169,13 @@ var _ = Describe("ActivityRepository", func() {
 		}
 		mock.ExpectBegin()
 		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
-			WillReturnResult(sqlmock.NewResult(0, 1000))
+			WillReturnResult(sqlmock.NewResult(0, 500))
 		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
-			WillReturnResult(sqlmock.NewResult(0, 1000))
+			WillReturnResult(sqlmock.NewResult(0, 500))
+		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
+			WillReturnResult(sqlmock.NewResult(0, 500))
+		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
+			WillReturnResult(sqlmock.NewResult(0, 500))
 		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
 			WillReturnResult(sqlmock.NewResult(0, 500))
 		mock.ExpectCommit()
@@ -198,5 +202,21 @@ var _ = Describe("ActivityRepository", func() {
 		mock.ExpectRollback()
 		err := repo.UpsertBatch(ctx, "acc", []brokerage.Activity{{ID: "x", SourceRecordID: "y", TradeDate: now}})
 		Expect(err).To(MatchError(ContainSubstring("dup")))
+	})
+
+	It("keeps a distinct identity and flags review when a SnapTrade ID changes but the fingerprint is stable", func() {
+		mock.ExpectQuery(rx(`SELECT "source_record_id","source_fingerprint" FROM "activities"`) + ".*" + rx(`ORDER BY source_record_id`)).
+			WillReturnRows(sqlmock.NewRows([]string{"source_record_id", "source_fingerprint"}).
+				AddRow("snaptrade:old-id", "stable-fingerprint"))
+		mock.ExpectBegin()
+		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+		err := repo.UpsertBatch(ctx, "acc", []brokerage.Activity{{
+			ID: "new-id", SourceRecordID: "snaptrade:new-id", SourceFingerprint: "stable-fingerprint",
+			TradeDate: now, Type: brokerage.ActivityDividend,
+		}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mock.ExpectationsWereMet()).To(Succeed())
 	})
 })

@@ -61,51 +61,122 @@ func (r *activityRepo) List(ctx context.Context, f repository.ActivityFilter) ([
 }
 
 // activityUpsertChunkSize bounds a single INSERT's bind parameters. ActivityPO
-// carries ~40 columns, and PostgreSQL's pgx extended protocol rejects
+// carries ~70 columns, and PostgreSQL's pgx extended protocol rejects
 // statements with more than 65,535 parameters, so an uncapped batch (e.g.
 // 1,000 fills normalized into 2,000 rows) fails and the sync retries the
-// same oversized batch forever.
-const activityUpsertChunkSize = 1000
+// same oversized batch forever. 500 rows keep statements near ~36k
+// parameters with headroom for future columns.
+const activityUpsertChunkSize = 500
 
 // activityConflictColumns lists every mutable normalized column refreshed
 // when an activity upsert hits the (account_id, source_record_id) conflict.
 // Identity (id, account_id, source_record_id, external_reference_id) stays
 // immutable so re-syncs update rows in place; everything else — including
-// is_external, source_group_id, symbol metadata and review state — follows
-// the latest normalization. A partial update list leaves financially
-// relevant metadata stale (e.g. a transfer that becomes internal when a
-// counterparty is tracked would keep its original external flag forever).
+// is_external, source_group_id, source_fingerprint, symbol metadata and
+// review state — follows the latest normalization. A partial update list
+// leaves financially relevant metadata stale (e.g. a transfer that becomes
+// internal when a counterparty is tracked would keep its original external
+// flag forever).
 func activityConflictColumns() []string {
 	return []string{
 		"symbol_ticker", "symbol_raw", "symbol_description", "symbol_name",
-		"symbol_type_code", "symbol_type_desc", "symbol_exchange_code",
-		"symbol_exchange_mic", "symbol_exchange_name", "symbol_exchange_suffix",
-		"symbol_currency_code", "symbol_currency_name", "symbol_figi",
+		"symbol_type_code", "symbol_type_desc", "symbol_type_supported",
+		"symbol_exchange_code", "symbol_exchange_mic", "symbol_exchange_name",
+		"symbol_exchange_suffix", "symbol_currency_code", "symbol_currency_name",
+		"symbol_figi",
+		"currency_symbol_ticker", "currency_symbol_raw", "currency_symbol_description",
+		"currency_symbol_name", "currency_symbol_type_code", "currency_symbol_type_desc",
+		"currency_symbol_supported", "currency_symbol_exchange_code",
+		"currency_symbol_exchange_mic", "currency_symbol_exchange_name",
+		"currency_symbol_exchange_suffix", "currency_symbol_currency_code",
+		"currency_symbol_currency_name", "currency_symbol_figi",
 		"price", "units", "amount", "currency_code", "currency_name",
 		"type", "subtype", "raw_type", "option_type", "description",
 		"option_ticker", "option_side", "option_strike", "option_expiry",
-		"option_is_mini", "option_underlying",
+		"option_is_mini", "option_underlying", "option_underlying_raw",
+		"option_underlying_description", "option_underlying_type",
+		"option_underlying_type_description", "option_underlying_supported",
+		"option_underlying_exchange", "option_underlying_mic",
+		"option_underlying_exchange_name", "option_underlying_exchange_suffix",
+		"option_underlying_currency", "option_underlying_currency_name",
+		"option_underlying_figi",
 		"trade_date", "settlement_date", "fee", "fee_asset", "fx_rate",
 		"institution", "provider_type", "source_system", "source_group_id",
-		"needs_review", "is_external",
+		"source_fingerprint", "needs_review", "is_external",
 	}
+}
+
+// applyFingerprintIdentity reconciles one batch item against the fingerprint
+// identities observed so far (committed rows first, then earlier batch items).
+// A fingerprint match on the item's own identity is a plain idempotent
+// re-sync. A match on a different identity is ambiguous: the upstream may
+// have reprocessed the record under a new ID, or these may be genuinely
+// identical twin records (same economics, distinct IDs). Both rows are kept —
+// drops are never silent — and the newcomer is flagged for human review. The
+// lookup orders by identity so the canonical row is deterministic across
+// re-syncs; within a batch the first item wins.
+func applyFingerprintIdentity(item *brokerage.Activity, known map[string]string) {
+	if item.SourceFingerprint == "" {
+		return
+	}
+	if prior, ok := known[item.SourceFingerprint]; ok {
+		if prior != item.SourceRecordID {
+			item.NeedsReview = true
+		}
+		return
+	}
+	known[item.SourceFingerprint] = item.SourceRecordID
 }
 
 // UpsertBatch deduplicates by (account_id, source_record_id). The conflict
 // target maps to the activities_account_source_uk unique index defined on
-// ActivityPO.
+// ActivityPO. Items carrying a source fingerprint are additionally reconciled
+// by economics (see applyFingerprintIdentity): colliding identities are kept
+// as separate rows flagged for review, never silently dropped.
 func (r *activityRepo) UpsertBatch(ctx context.Context, accountID string, items []brokerage.Activity) error {
 	if len(items) == 0 {
 		return nil
 	}
-	unique := make(map[string]ActivityPO, len(items))
+	// Fingerprint reconciliation keeps paged importers idempotent when the
+	// upstream re-keys a transaction between pages. Ordering by identity
+	// makes the canonical row per fingerprint deterministic across runs:
+	// without it, re-syncs could resolve a persisted collision to different
+	// rows and flap the review flag that keep-and-flag relies on (the flag
+	// itself is refreshed by the upsert conflict columns).
+	fingerprints := make([]string, 0, len(items))
 	for _, it := range items {
-		po := activityFromDomain(accountID, it)
-		unique[po.SourceRecordID] = po
+		if it.SourceFingerprint != "" {
+			fingerprints = append(fingerprints, it.SourceFingerprint)
+		}
 	}
-	pos := make([]ActivityPO, 0, len(unique))
-	for _, po := range unique {
-		pos = append(pos, po)
+	identityByFingerprint := make(map[string]string, len(fingerprints))
+	if len(fingerprints) > 0 {
+		var existing []ActivityPO
+		err := r.db.WithContext(ctx).
+			Select("source_record_id", "source_fingerprint").
+			Where("account_id = ? AND source_fingerprint IN ?", accountID, fingerprints).
+			Order("source_record_id").
+			Find(&existing).Error
+		if err != nil {
+			return fmt.Errorf("activity fingerprint lookup: %w", err)
+		}
+		for _, po := range existing {
+			identityByFingerprint[po.SourceFingerprint] = po.SourceRecordID
+		}
+	}
+
+	bySourceRecord := make(map[string]ActivityPO, len(items))
+	order := make([]string, 0, len(items))
+	for _, it := range items {
+		applyFingerprintIdentity(&it, identityByFingerprint)
+		if _, ok := bySourceRecord[it.SourceRecordID]; !ok {
+			order = append(order, it.SourceRecordID)
+		}
+		bySourceRecord[it.SourceRecordID] = activityFromDomain(accountID, it)
+	}
+	pos := make([]ActivityPO, 0, len(bySourceRecord))
+	for _, sourceRecordID := range order {
+		pos = append(pos, bySourceRecord[sourceRecordID])
 	}
 	conflict := clause.OnConflict{
 		Columns:   []clause.Column{{Name: "account_id"}, {Name: "source_record_id"}},

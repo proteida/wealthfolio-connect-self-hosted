@@ -13,7 +13,6 @@ import (
 
 	appprices "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/prices"
 	steamprices "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/steamprices"
-	appsync "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/sync"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/repository"
 	domainsync "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/sync"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/binance"
@@ -22,6 +21,7 @@ import (
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/hyperliquid"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/ibkr"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/okx"
+	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/snaptrade"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/steam"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/ton"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/config"
@@ -31,14 +31,60 @@ import (
 //
 // Broker connections retain their existing wiring. Crypto integrations are
 // flattened into the same group only when their credentials are configured.
+// The optional SnapTrade importer joins the same flattened group when enabled.
 var Module = fx.Module("infrastructure.clients",
 	fx.Provide(
-		appsync.AsBrokerClient(NewFutu),
-		appsync.AsBrokerClient(NewIBKR),
+		NewDirectBrokers,
 		NewCryptoClients,
+		NewSnapTrade,
 		AsSteamPriceProvider(NewSteamPriceProvider),
 	),
 )
+
+// DirectBrokersOut contributes the explicitly enabled direct-broker clients
+// (Futu OpenD, IBKR gateway) to the shared broker_clients group. Disabled
+// integrations stay out of the scheduler entirely: they neither probe
+// localhost on every run nor double-import accounts that SnapTrade already
+// covers through a connected IBKR login.
+type DirectBrokersOut struct {
+	fx.Out
+	Clients []domainsync.BrokerClient `group:"broker_clients,flatten"`
+}
+
+// NewDirectBrokers constructs direct-broker clients only for integrations
+// whose explicit enable flag is set.
+func NewDirectBrokers(cfg *config.Config, log zerolog.Logger) DirectBrokersOut {
+	out := DirectBrokersOut{}
+	if cfg == nil {
+		return out
+	}
+	if cfg.Futu.Enabled {
+		out.Clients = append(out.Clients, NewFutu(cfg, log))
+	}
+	if cfg.IBKR.Enabled {
+		out.Clients = append(out.Clients, NewIBKR(cfg))
+	}
+	return out
+}
+
+// SnapTradeOut conditionally contributes the enabled SnapTrade client to the
+// shared broker_clients group. An empty slice cleanly disables the integration.
+type SnapTradeOut struct {
+	fx.Out
+	Clients []domainsync.BrokerClient `group:"broker_clients,flatten"`
+}
+
+// NewSnapTrade builds the optional SnapTrade client from validated config.
+func NewSnapTrade(cfg *config.Config, log zerolog.Logger) (SnapTradeOut, error) {
+	if cfg == nil || !cfg.SnapTrade.Enabled {
+		return SnapTradeOut{}, nil
+	}
+	client, err := snaptrade.New(cfg.SnapTrade, log.With().Str("client", "snaptrade").Logger(), nil)
+	if err != nil {
+		return SnapTradeOut{}, err
+	}
+	return SnapTradeOut{Clients: []domainsync.BrokerClient{client}}, nil
+}
 
 // NewFutu builds the Futu BrokerClient from config.
 func NewFutu(cfg *config.Config, log zerolog.Logger) *futu.Client {

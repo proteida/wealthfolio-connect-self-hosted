@@ -3,6 +3,7 @@ package clients_test
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -29,11 +30,11 @@ func TestClientsModule(t *testing.T) {
 func sampleCfg() *config.Config {
 	return &config.Config{
 		Futu: config.FutuConfig{
-			Host: "127.0.0.1", Port: 11111,
+			Enabled: true, Host: "127.0.0.1", Port: 11111,
 			TradePassword: "secret", ConnectionID: "wftest",
 		},
 		IBKR: config.IBKRConfig{
-			Host: "127.0.0.1", Port: 4002, ClientID: 17,
+			Enabled: true, Host: "127.0.0.1", Port: 4002, ClientID: 17,
 		},
 		Crypto: config.CryptoConfig{
 			BinanceAPIKey: "bk", BinanceSecret: "bs",
@@ -78,6 +79,49 @@ var _ = Describe("Client constructors", func() {
 	})
 	It("Module is non-nil", func() {
 		Expect(clients.Module).NotTo(BeNil())
+	})
+	It("omits direct brokers unless explicitly enabled", func() {
+		Expect(clients.NewDirectBrokers(&config.Config{}, zerolog.Nop()).Clients).To(BeEmpty())
+		Expect(clients.NewDirectBrokers(nil, zerolog.Nop()).Clients).To(BeEmpty())
+	})
+	It("registers enabled direct brokers", func() {
+		out := clients.NewDirectBrokers(cfg, zerolog.Nop())
+		ids := make([]string, 0, len(out.Clients))
+		for _, client := range out.Clients {
+			ids = append(ids, client.ID())
+		}
+		Expect(ids).To(ConsistOf("futu", "ibkr"))
+	})
+	It("omits every unconfigured crypto integration", func() {
+		out := clients.NewCryptoClients(&config.Config{}, zerolog.Nop(), nil, nil, nil, nil, nil)
+		Expect(out.Clients).To(BeEmpty())
+	})
+	It("registers every fully configured crypto integration", func() {
+		out := clients.NewCryptoClients(cfg, zerolog.Nop(), nil, nil, nil, nil, nil)
+		ids := make([]string, 0, len(out.Clients))
+		for _, client := range out.Clients {
+			ids = append(ids, client.ID())
+		}
+		// Futu/IBKR are wired as standalone fx providers (see Module);
+		// the flattened crypto group covers the exchange integrations.
+		Expect(ids).To(ConsistOf("binance", "okx", "bitget", "hyperliquid", "okx_web3"))
+	})
+	It("omits SnapTrade cleanly when disabled", func() {
+		out, err := clients.NewSnapTrade(cfg, zerolog.Nop())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.Clients).To(BeEmpty())
+	})
+	It("registers SnapTrade only when enabled", func() {
+		enabled := *cfg
+		enabled.SnapTrade = config.SnapTradeConfig{
+			Enabled: true, AuthMode: "personal", Package: "personal", ClientID: "client", ConsumerKey: "consumer",
+			BaseURL: "https://api.snaptrade.com", SyncInterval: time.Hour, RequestInterval: time.Minute,
+			RequestTimeout: time.Second, SafetyPercent: 80, RetryBaseDelay: time.Second, RetryMaxDelay: time.Minute,
+		}
+		out, err := clients.NewSnapTrade(&enabled, zerolog.Nop())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.Clients).To(HaveLen(1))
+		Expect(out.Clients[0].ID()).To(Equal("snaptrade"))
 	})
 })
 

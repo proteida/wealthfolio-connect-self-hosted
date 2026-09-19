@@ -12,7 +12,7 @@ import (
 // metadata is flattened into individual columns to match the original schema.
 type ActivityPO struct {
 	ID             string `gorm:"column:id;primaryKey;type:text"`
-	AccountID      string `gorm:"column:account_id;type:text;not null;uniqueIndex:activities_account_source_uk,priority:1;index:activities_account_idx,priority:1"`
+	AccountID      string `gorm:"column:account_id;type:text;not null;uniqueIndex:activities_account_source_uk,priority:1;index:activities_account_idx,priority:1;index:activities_account_fingerprint_idx,priority:1"`
 	SourceRecordID string `gorm:"column:source_record_id;type:text;not null;uniqueIndex:activities_account_source_uk,priority:2"`
 
 	SymbolTicker         string `gorm:"column:symbol_ticker;type:text;not null;default:''"`
@@ -21,6 +21,7 @@ type ActivityPO struct {
 	SymbolName           string `gorm:"column:symbol_name;type:text;not null;default:''"`
 	SymbolTypeCode       string `gorm:"column:symbol_type_code;type:text;not null;default:''"`
 	SymbolTypeDesc       string `gorm:"column:symbol_type_desc;type:text;not null;default:''"`
+	SymbolTypeSupported  bool   `gorm:"column:symbol_type_supported;not null;default:false"`
 	SymbolExchangeCode   string `gorm:"column:symbol_exchange_code;type:text;not null;default:''"`
 	SymbolExchangeMIC    string `gorm:"column:symbol_exchange_mic;type:text;not null;default:''"`
 	SymbolExchangeName   string `gorm:"column:symbol_exchange_name;type:text;not null;default:''"`
@@ -28,6 +29,40 @@ type ActivityPO struct {
 	SymbolCurrencyCode   string `gorm:"column:symbol_currency_code;type:text;not null;default:''"`
 	SymbolCurrencyName   string `gorm:"column:symbol_currency_name;type:text;not null;default:''"`
 	SymbolFIGI           string `gorm:"column:symbol_figi;type:text;not null;default:''"`
+
+	CurrencySymbolTicker       string `gorm:"column:currency_symbol_ticker;type:text;not null;default:''"`
+	CurrencySymbolRaw          string `gorm:"column:currency_symbol_raw;type:text;not null;default:''"`
+	CurrencySymbolDescription  string `gorm:"column:currency_symbol_description;type:text;not null;default:''"`
+	CurrencySymbolName         string `gorm:"column:currency_symbol_name;type:text;not null;default:''"`
+	CurrencySymbolTypeCode     string `gorm:"column:currency_symbol_type_code;type:text;not null;default:''"`
+	CurrencySymbolTypeDesc     string `gorm:"column:currency_symbol_type_desc;type:text;not null;default:''"`
+	CurrencySymbolSupported    bool   `gorm:"column:currency_symbol_supported;not null;default:false"`
+	CurrencySymbolExchangeCode string `gorm:"column:currency_symbol_exchange_code;type:text;not null;default:''"`
+	CurrencySymbolExchangeMIC  string `gorm:"column:currency_symbol_exchange_mic;type:text;not null;default:''"`
+	CurrencySymbolExchangeName string `gorm:"column:currency_symbol_exchange_name;type:text;not null;default:''"`
+	CurrencySymbolExchangeSfx  string `gorm:"column:currency_symbol_exchange_suffix;type:text;not null;default:''"`
+	CurrencySymbolCurrencyCode string `gorm:"column:currency_symbol_currency_code;type:text;not null;default:''"`
+	CurrencySymbolCurrencyName string `gorm:"column:currency_symbol_currency_name;type:text;not null;default:''"`
+	CurrencySymbolFIGI         string `gorm:"column:currency_symbol_figi;type:text;not null;default:''"`
+
+	OptionTicker               string     `gorm:"column:option_ticker;type:text;not null;default:''"`
+	OptionSide                 string     `gorm:"column:option_side;type:text;not null;default:''"`
+	OptionStrike               float64    `gorm:"column:option_strike;not null;default:0"`
+	OptionExpiry               *time.Time `gorm:"column:option_expiry"`
+	OptionIsMini               bool       `gorm:"column:option_is_mini;not null;default:false"`
+	OptionUnderlying           string     `gorm:"column:option_underlying;type:text;not null;default:''"`
+	OptionUnderlyingRaw        string     `gorm:"column:option_underlying_raw;type:text;not null;default:''"`
+	OptionUnderlyingDesc       string     `gorm:"column:option_underlying_description;type:text;not null;default:''"`
+	OptionUnderlyingType       string     `gorm:"column:option_underlying_type;type:text;not null;default:''"`
+	OptionUnderlyingTypeDesc   string     `gorm:"column:option_underlying_type_description;type:text;not null;default:''"`
+	OptionUnderlyingSupported  bool       `gorm:"column:option_underlying_supported;not null;default:false"`
+	OptionUnderlyingExch       string     `gorm:"column:option_underlying_exchange;type:text;not null;default:''"`
+	OptionUnderlyingMIC        string     `gorm:"column:option_underlying_mic;type:text;not null;default:''"`
+	OptionUnderlyingExchName   string     `gorm:"column:option_underlying_exchange_name;type:text;not null;default:''"`
+	OptionUnderlyingExchSuffix string     `gorm:"column:option_underlying_exchange_suffix;type:text;not null;default:''"`
+	OptionUnderlyingCurr       string     `gorm:"column:option_underlying_currency;type:text;not null;default:''"`
+	OptionUnderlyingCurrName   string     `gorm:"column:option_underlying_currency_name;type:text;not null;default:''"`
+	OptionUnderlyingFIGI       string     `gorm:"column:option_underlying_figi;type:text;not null;default:''"`
 
 	Price        float64 `gorm:"column:price;not null;default:0"`
 	Units        float64 `gorm:"column:units;not null;default:0"`
@@ -41,16 +76,6 @@ type ActivityPO struct {
 	OptionType  string `gorm:"column:option_type;type:text;not null;default:''"`
 	Description string `gorm:"column:description;type:text;not null;default:''"`
 
-	// Option contract identity: without these columns an option leg
-	// round-trips back with a nil OptionSymbol and distinct series
-	// collapse downstream.
-	OptionTicker     string     `gorm:"column:option_ticker;type:text;not null;default:''"`
-	OptionSide       string     `gorm:"column:option_side;type:text;not null;default:''"`
-	OptionStrike     float64    `gorm:"column:option_strike;not null;default:0"`
-	OptionExpiry     *time.Time `gorm:"column:option_expiry"`
-	OptionIsMini     bool       `gorm:"column:option_is_mini;not null;default:false"`
-	OptionUnderlying string     `gorm:"column:option_underlying;type:text;not null;default:''"`
-
 	TradeDate      time.Time  `gorm:"column:trade_date;not null;index:activities_account_idx,priority:2,sort:desc"`
 	SettlementDate *time.Time `gorm:"column:settlement_date"`
 	Fee            float64    `gorm:"column:fee;not null;default:0"`
@@ -62,6 +87,7 @@ type ActivityPO struct {
 	ProviderType        string `gorm:"column:provider_type;type:text;not null;default:'CUSTOM'"`
 	SourceSystem        string `gorm:"column:source_system;type:text;not null;default:'CUSTOM'"`
 	SourceGroupID       string `gorm:"column:source_group_id;type:text;not null;default:''"`
+	SourceFingerprint   string `gorm:"column:source_fingerprint;type:text;not null;default:'';index:activities_account_fingerprint_idx,priority:2"`
 	NeedsReview         bool   `gorm:"column:needs_review;not null;default:false"`
 	IsExternal          bool   `gorm:"column:is_external;not null;default:false"`
 }
@@ -94,6 +120,7 @@ func (p ActivityPO) ToDomain() brokerage.Activity {
 		SourceSystem:        p.SourceSystem,
 		SourceRecordID:      p.SourceRecordID,
 		SourceGroupID:       p.SourceGroupID,
+		SourceFingerprint:   p.SourceFingerprint,
 		NeedsReview:         p.NeedsReview,
 		IsExternal:          p.IsExternal,
 	}
@@ -106,7 +133,7 @@ func (p ActivityPO) ToDomain() brokerage.Activity {
 			Type: brokerage.SymbolType{
 				Code:        p.SymbolTypeCode,
 				Description: p.SymbolTypeDesc,
-				IsSupported: true,
+				IsSupported: p.SymbolTypeSupported,
 			},
 			Exchange: brokerage.Exchange{
 				Code:    p.SymbolExchangeCode,
@@ -118,16 +145,26 @@ func (p ActivityPO) ToDomain() brokerage.Activity {
 			FIGICode: p.SymbolFIGI,
 		}
 	}
+	if p.CurrencySymbolTicker != "" || p.CurrencySymbolRaw != "" {
+		a.CurrencySymbol = &brokerage.Symbol{
+			Symbol: p.CurrencySymbolTicker, RawSymbol: p.CurrencySymbolRaw,
+			Description: p.CurrencySymbolDescription, Name: p.CurrencySymbolName,
+			Type:     brokerage.SymbolType{Code: p.CurrencySymbolTypeCode, Description: p.CurrencySymbolTypeDesc, IsSupported: p.CurrencySymbolSupported},
+			Exchange: brokerage.Exchange{Code: p.CurrencySymbolExchangeCode, MICCode: p.CurrencySymbolExchangeMIC, Name: p.CurrencySymbolExchangeName, Suffix: p.CurrencySymbolExchangeSfx},
+			Currency: brokerage.Currency{Code: p.CurrencySymbolCurrencyCode, Name: p.CurrencySymbolCurrencyName},
+			FIGICode: p.CurrencySymbolFIGI,
+		}
+	}
 	if p.OptionTicker != "" {
 		a.OptionSymbol = &brokerage.OptionSymbol{
-			Ticker:         p.OptionTicker,
-			OptionType:     brokerage.OptionSide(p.OptionSide),
-			StrikePrice:    p.OptionStrike,
-			ExpirationDate: orZeroTime(p.OptionExpiry),
-			IsMiniOption:   p.OptionIsMini,
+			Ticker: p.OptionTicker, OptionType: brokerage.OptionSide(p.OptionSide),
+			StrikePrice: p.OptionStrike, ExpirationDate: orZeroTime(p.OptionExpiry), IsMiniOption: p.OptionIsMini,
 			Underlying: brokerage.Symbol{
-				Symbol:    p.OptionUnderlying,
-				RawSymbol: p.OptionUnderlying,
+				Symbol: p.OptionUnderlying, RawSymbol: p.OptionUnderlyingRaw,
+				Description: p.OptionUnderlyingDesc,
+				Type:        brokerage.SymbolType{Code: p.OptionUnderlyingType, Description: p.OptionUnderlyingTypeDesc, IsSupported: p.OptionUnderlyingSupported},
+				Exchange:    brokerage.Exchange{Code: p.OptionUnderlyingExch, MICCode: p.OptionUnderlyingMIC, Name: p.OptionUnderlyingExchName, Suffix: p.OptionUnderlyingExchSuffix},
+				Currency:    brokerage.Currency{Code: p.OptionUnderlyingCurr, Name: p.OptionUnderlyingCurrName}, FIGICode: p.OptionUnderlyingFIGI,
 			},
 		}
 	}
@@ -159,6 +196,10 @@ func activityFromDomain(accountID string, a brokerage.Activity) ActivityPO {
 	if a.Symbol != nil {
 		s = *a.Symbol
 	}
+	var currencySymbol brokerage.Symbol
+	if a.CurrencySymbol != nil {
+		currencySymbol = *a.CurrencySymbol
+	}
 	var opt brokerage.OptionSymbol
 	if a.OptionSymbol != nil {
 		opt = *a.OptionSymbol
@@ -170,49 +211,77 @@ func activityFromDomain(accountID string, a brokerage.Activity) ActivityPO {
 		a.SourceSystem = "CUSTOM"
 	}
 	return ActivityPO{
-		ID:                   a.ID,
-		AccountID:            accountID,
-		SourceRecordID:       a.SourceRecordID,
-		SymbolTicker:         s.Symbol,
-		SymbolRaw:            s.RawSymbol,
-		SymbolDescription:    s.Description,
-		SymbolName:           s.Name,
-		SymbolTypeCode:       s.Type.Code,
-		SymbolTypeDesc:       s.Type.Description,
-		SymbolExchangeCode:   s.Exchange.Code,
-		SymbolExchangeMIC:    s.Exchange.MICCode,
-		SymbolExchangeName:   s.Exchange.Name,
-		SymbolExchangeSuffix: s.Exchange.Suffix,
-		SymbolCurrencyCode:   s.Currency.Code,
-		SymbolCurrencyName:   s.Currency.Name,
-		SymbolFIGI:           s.FIGICode,
-		Price:                a.Price,
-		Units:                a.Units,
-		Amount:               a.Amount,
-		CurrencyCode:         a.Currency.Code,
-		CurrencyName:         a.Currency.Name,
-		Type:                 string(a.Type),
-		Subtype:              a.Subtype,
-		RawType:              a.RawType,
-		OptionType:           a.OptionType,
-		Description:          a.Description,
-		OptionTicker:         opt.Ticker,
-		OptionSide:           string(opt.OptionType),
-		OptionStrike:         opt.StrikePrice,
-		OptionExpiry:         nullableTime(opt.ExpirationDate),
-		OptionIsMini:         opt.IsMiniOption,
-		OptionUnderlying:     opt.Underlying.Symbol,
-		TradeDate:            a.TradeDate,
-		SettlementDate:       a.SettlementDate,
-		Fee:                  a.Fee,
-		FeeAsset:             a.FeeAsset,
-		FxRate:               a.FxRate,
-		Institution:          a.Institution,
-		ExternalReferenceID:  a.ExternalReferenceID,
-		ProviderType:         a.ProviderType,
-		SourceSystem:         a.SourceSystem,
-		SourceGroupID:        a.SourceGroupID,
-		NeedsReview:          a.NeedsReview,
-		IsExternal:           a.IsExternal,
+		ID:                         a.ID,
+		AccountID:                  accountID,
+		SourceRecordID:             a.SourceRecordID,
+		SymbolTicker:               s.Symbol,
+		SymbolRaw:                  s.RawSymbol,
+		SymbolDescription:          s.Description,
+		SymbolName:                 s.Name,
+		SymbolTypeCode:             s.Type.Code,
+		SymbolTypeDesc:             s.Type.Description,
+		SymbolTypeSupported:        s.Type.IsSupported,
+		SymbolExchangeCode:         s.Exchange.Code,
+		SymbolExchangeMIC:          s.Exchange.MICCode,
+		SymbolExchangeName:         s.Exchange.Name,
+		SymbolExchangeSuffix:       s.Exchange.Suffix,
+		SymbolCurrencyCode:         s.Currency.Code,
+		SymbolCurrencyName:         s.Currency.Name,
+		SymbolFIGI:                 s.FIGICode,
+		CurrencySymbolTicker:       currencySymbol.Symbol,
+		CurrencySymbolRaw:          currencySymbol.RawSymbol,
+		CurrencySymbolDescription:  currencySymbol.Description,
+		CurrencySymbolName:         currencySymbol.Name,
+		CurrencySymbolTypeCode:     currencySymbol.Type.Code,
+		CurrencySymbolTypeDesc:     currencySymbol.Type.Description,
+		CurrencySymbolSupported:    currencySymbol.Type.IsSupported,
+		CurrencySymbolExchangeCode: currencySymbol.Exchange.Code,
+		CurrencySymbolExchangeMIC:  currencySymbol.Exchange.MICCode,
+		CurrencySymbolExchangeName: currencySymbol.Exchange.Name,
+		CurrencySymbolExchangeSfx:  currencySymbol.Exchange.Suffix,
+		CurrencySymbolCurrencyCode: currencySymbol.Currency.Code,
+		CurrencySymbolCurrencyName: currencySymbol.Currency.Name,
+		CurrencySymbolFIGI:         currencySymbol.FIGICode,
+		OptionTicker:               opt.Ticker,
+		OptionSide:                 string(opt.OptionType),
+		OptionStrike:               opt.StrikePrice,
+		OptionExpiry:               nullableTime(opt.ExpirationDate),
+		OptionIsMini:               opt.IsMiniOption,
+		OptionUnderlying:           opt.Underlying.Symbol,
+		OptionUnderlyingRaw:        opt.Underlying.RawSymbol,
+		OptionUnderlyingDesc:       opt.Underlying.Description,
+		OptionUnderlyingType:       opt.Underlying.Type.Code,
+		OptionUnderlyingTypeDesc:   opt.Underlying.Type.Description,
+		OptionUnderlyingSupported:  opt.Underlying.Type.IsSupported,
+		OptionUnderlyingExch:       opt.Underlying.Exchange.Code,
+		OptionUnderlyingMIC:        opt.Underlying.Exchange.MICCode,
+		OptionUnderlyingExchName:   opt.Underlying.Exchange.Name,
+		OptionUnderlyingExchSuffix: opt.Underlying.Exchange.Suffix,
+		OptionUnderlyingCurr:       opt.Underlying.Currency.Code,
+		OptionUnderlyingCurrName:   opt.Underlying.Currency.Name,
+		OptionUnderlyingFIGI:       opt.Underlying.FIGICode,
+		Price:                      a.Price,
+		Units:                      a.Units,
+		Amount:                     a.Amount,
+		CurrencyCode:               a.Currency.Code,
+		CurrencyName:               a.Currency.Name,
+		Type:                       string(a.Type),
+		Subtype:                    a.Subtype,
+		RawType:                    a.RawType,
+		OptionType:                 a.OptionType,
+		Description:                a.Description,
+		TradeDate:                  a.TradeDate,
+		SettlementDate:             a.SettlementDate,
+		Fee:                        a.Fee,
+		FxRate:                     a.FxRate,
+		Institution:                a.Institution,
+		ExternalReferenceID:        a.ExternalReferenceID,
+		ProviderType:               a.ProviderType,
+		SourceSystem:               a.SourceSystem,
+		SourceGroupID:              a.SourceGroupID,
+		SourceFingerprint:          a.SourceFingerprint,
+		NeedsReview:                a.NeedsReview,
+		FeeAsset:                   a.FeeAsset,
+		IsExternal:                 a.IsExternal,
 	}
 }
