@@ -236,6 +236,9 @@ func (c *Client) ensureAuth(ctx context.Context) error {
 		return nil
 	}
 	auth := NewSteamAuthClient(c.cfg.SteamID, c.cfg.RefreshToken, c.http, "")
+	if auth == nil {
+		return steamErr("auth", fmt.Errorf("cookie jar unavailable"))
+	}
 	auth.SetLogger(c.log)
 	auth.SetLogger(c.log)
 	authed, err := auth.AuthenticatedClient(ctx)

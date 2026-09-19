@@ -44,7 +44,7 @@ type Resolution struct {
 	MatchConfidence domainsteam.MatchConfidence
 }
 
-// Resolve binds owned assets to acquisition evidence. Parameters:
+// resolve binds owned assets to acquisition evidence. Parameters:
 // before/after are the previous and current assetid sets (nil when
 // unknown); events are normalized inventory-history rows; market maps
 // external market IDs to transactions; trades are normalized trade
@@ -53,7 +53,7 @@ type Resolution struct {
 // items keep their provenance from the stored acquisitions merged by the
 // caller instead). Returned resolutions cover every owned asset;
 // leftovers are reported separately for the unmatched store.
-func Resolve(owned []InventoryItem, before map[string]bool, events []historyEvent, market map[string]domainsteam.MarketTransaction, trades []domainsteam.TradeRecord, now time.Time) (resolved []Resolution, unmatchedEvents []historyEvent) {
+func resolve(owned []InventoryItem, before map[string]bool, events []historyEvent, market map[string]domainsteam.MarketTransaction, trades []domainsteam.TradeRecord, now time.Time) (resolved []Resolution, unmatchedEvents []historyEvent) {
 	byAsset := map[string][]historyEvent{}
 	for _, ev := range events {
 		if ev.AssetID != "" {
@@ -770,7 +770,7 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 			}
 		}
 	}
-	resolved, unmatched := Resolve(items, before, events, market, trades, now)
+	resolved, unmatched := resolve(items, before, events, market, trades, now)
 	if c.store != nil && len(items) > 0 {
 		// Temporary provenance failures must not degrade known items:
 		// stored acquisitions refill resolutions the fresh evidence
@@ -896,22 +896,21 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 		var price float64
 		var priceType string
 		var valued bool
-		if pricing {
-			if !pricable(r.Asset) {
-				// Unmarketable collectibles (Veteran Coins, drops, empty
-				// names from partial pages) never have a market quote:
-				// leave unvalued without burning a provider call or
-				// tripping the breaker.
-				unpriced++
-			} else {
-				price, priceType, valued = priceOf(r.Asset.MarketHashName)
-			}
-		} else if pricable(r.Asset) {
+		switch {
+		case pricing && !pricable(r.Asset):
+			// Unmarketable collectibles (Veteran Coins, drops, empty
+			// names from partial pages) never have a market quote:
+			// leave unvalued without burning a provider call or
+			// tripping the breaker.
+			unpriced++
+		case pricing:
+			price, priceType, valued = priceOf(r.Asset.MarketHashName)
+		case pricable(r.Asset):
 			// Breaker tripped: no live calls, but cheap stored quotes
 			// still stabilize the filter and the display instead of
 			// zeroing everything behind the failure.
 			price, priceType, valued = c.stalePrice(ctx, r.Asset.MarketHashName)
-		} else {
+		default:
 			unpriced++
 		}
 		if c.cfg.MinItemValueUSD > 0 {
@@ -927,12 +926,14 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 			if valued {
 				groupTotal = float64(groupQty[priceDedupeKey(r.Asset.MarketHashName)]) * price
 			}
-			if !valued || groupTotal <= c.cfg.MinItemValueUSD {
-				if valued {
-					skippedDust++
-				} else {
-					skippedUnpriced++
-				}
+			filtered := !valued || groupTotal <= c.cfg.MinItemValueUSD
+			switch {
+			case !valued:
+				skippedUnpriced++
+			case filtered:
+				skippedDust++
+			}
+			if filtered {
 				if len(skippedNames) < 8 {
 					skippedNames = append(skippedNames, r.Asset.MarketHashName)
 				}
@@ -994,7 +995,7 @@ type pricedQuote struct {
 // quotes observed within stalePriceMaxAge qualify: older ones stay
 // unvalued rather than misleading, and names never observed have
 // nothing to fall back to.
-func (c *Client) stalePrice(ctx context.Context, marketHashName string) (float64, string, bool) {
+func (c *Client) stalePrice(ctx context.Context, marketHashName string) (price float64, priceType string, valued bool) {
 	if c.priceHistory == nil || strings.TrimSpace(marketHashName) == "" {
 		return 0, "", false
 	}
@@ -1253,11 +1254,6 @@ func newestTradeTime(trades []domainsteam.TradeRecord) time.Time {
 		}
 	}
 	return newest
-}
-
-// lotList centralizes lot building for persistence.
-func lotList(resolved []Resolution) []domainsteam.AcquisitionLot {
-	return buildLots(resolved)
 }
 
 func toLotRows(lots []domainsteam.AcquisitionLot) []repository.SteamLotRow {

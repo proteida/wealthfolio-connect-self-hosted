@@ -55,14 +55,6 @@ func redactURL(rawURL string) string {
 	return u.String()
 }
 
-// redactValue replaces a bare secret with a placeholder for error paths.
-func redactValue(s string) string {
-	if strings.TrimSpace(s) == "" {
-		return ""
-	}
-	return "[redacted]"
-}
-
 // sanitizeHTTPError strips secret query values from url.Error so network
 // failures (which commonly embed the full URL, including STEAM_API_KEY)
 // can be wrapped and logged safely.

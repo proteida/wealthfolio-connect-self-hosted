@@ -15,13 +15,21 @@ const CS2AppID = 730
 type AcquisitionType string
 
 const (
-	AcquisitionUnknown    AcquisitionType = ""
-	AcquisitionMarketBuy  AcquisitionType = "steam_market"
-	AcquisitionTrade      AcquisitionType = "trade"
-	AcquisitionCraft      AcquisitionType = "craft"
-	AcquisitionDrop       AcquisitionType = "drop"
-	AcquisitionGift       AcquisitionType = "gift"
-	AcquisitionReturned   AcquisitionType = "market_returned"
+	// AcquisitionUnknown marks assets whose entry reason is not recorded.
+	AcquisitionUnknown AcquisitionType = ""
+	// AcquisitionMarketBuy marks items bought on the Community Market.
+	AcquisitionMarketBuy AcquisitionType = "steam_market"
+	// AcquisitionTrade marks items received in a trade.
+	AcquisitionTrade AcquisitionType = "trade"
+	// AcquisitionCraft marks crafted items.
+	AcquisitionCraft AcquisitionType = "craft"
+	// AcquisitionDrop marks drops and earned items.
+	AcquisitionDrop AcquisitionType = "drop"
+	// AcquisitionGift marks gifted items.
+	AcquisitionGift AcquisitionType = "gift"
+	// AcquisitionReturned marks items returned from market listings.
+	AcquisitionReturned AcquisitionType = "market_returned"
+	// AcquisitionUnresolved marks items with no acquisition evidence yet.
 	AcquisitionUnresolved AcquisitionType = "unresolved"
 )
 
@@ -31,10 +39,15 @@ const (
 type MatchConfidence string
 
 const (
-	MatchExact      MatchConfidence = "exact"
-	MatchHigh       MatchConfidence = "high"
-	MatchMedium     MatchConfidence = "medium"
-	MatchLow        MatchConfidence = "low"
+	// MatchExact means a unique asset identifier agreed on both sides.
+	MatchExact MatchConfidence = "exact"
+	// MatchHigh means history and market rows agreed on the acquisition.
+	MatchHigh MatchConfidence = "high"
+	// MatchMedium means attribute proximity without unique identity.
+	MatchMedium MatchConfidence = "medium"
+	// MatchLow means weak evidence, flagged for review.
+	MatchLow MatchConfidence = "low"
+	// MatchUnresolved means no acquisition evidence was bound.
 	MatchUnresolved MatchConfidence = "unresolved"
 )
 
@@ -42,11 +55,18 @@ const (
 type MatchMethod string
 
 const (
-	MatchSnapshotEvent    MatchMethod = "snapshot+inventory_history"
-	MatchNewAssetID       MatchMethod = "trade_new_assetid"
-	MatchHistoryMarket    MatchMethod = "inventory_history+market_history"
-	MatchAttributes       MatchMethod = "attributes+proximity"
-	MatchLotOnly          MatchMethod = "lot_only"
+	// MatchSnapshotEvent means the asset appeared between two snapshots
+	// with a matching inventory-history event.
+	MatchSnapshotEvent MatchMethod = "snapshot+inventory_history"
+	// MatchNewAssetID means a trade echoed the current asset ID.
+	MatchNewAssetID MatchMethod = "trade_new_assetid"
+	// MatchHistoryMarket means history and market rows agreed.
+	MatchHistoryMarket MatchMethod = "inventory_history+market_history"
+	// MatchAttributes means class/instance/name proximity matched.
+	MatchAttributes MatchMethod = "attributes+proximity"
+	// MatchLotOnly means the asset only belongs to an acquisition lot.
+	MatchLotOnly MatchMethod = "lot_only"
+	// MatchMethodUnresolved means no match method applied.
 	MatchMethodUnresolved MatchMethod = "unresolved"
 )
 

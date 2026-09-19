@@ -89,7 +89,7 @@ func (c *Client) fetchTrades(ctx context.Context, start *tradeResume, stopBefore
 	resume := start != nil
 	for page := 0; page < c.cfg.MaxPages; page++ {
 		q := url.Values{
-			"max_trades":       {"100"},
+			"max_trades":       {strconv.Itoa(pageSize)},
 			"get_descriptions": {"1"},
 			"language":         {"english"},
 			"include_failed":   {"1"},
@@ -134,7 +134,7 @@ func (c *Client) fetchTrades(ctx context.Context, start *tradeResume, stopBefore
 			}
 		}
 		if !resume && !stopBefore.IsZero() {
-			if min := pageMinTradeTime(trades); !min.IsZero() && !min.After(stopBefore.Add(time.Second)) {
+			if earliest := pageMinTradeTime(trades); !earliest.IsZero() && !earliest.After(stopBefore.Add(time.Second)) {
 				return all, true, nil, nil
 			}
 		}
@@ -152,15 +152,15 @@ func (c *Client) fetchTrades(ctx context.Context, start *tradeResume, stopBefore
 // pageMinTradeTime returns the oldest parseable trade timestamp in raw
 // rows (zero when none parse, which must never trigger a watermark stop).
 func pageMinTradeTime(trades []rawTrade) time.Time {
-	min := time.Time{}
+	earliest := time.Time{}
 	for _, t := range trades {
 		at := parseSteamTime(strVal(t.TimeInit))
 		if at.IsZero() {
 			continue
 		}
-		if min.IsZero() || at.Before(min) {
-			min = at
+		if earliest.IsZero() || at.Before(earliest) {
+			earliest = at
 		}
 	}
-	return min
+	return earliest
 }

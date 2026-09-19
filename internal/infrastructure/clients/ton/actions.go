@@ -66,7 +66,7 @@ type jettonTransferDetails struct {
 	ReceiverJettonWallet string `json:"receiver_jetton_wallet"`
 }
 
-// swapLeg is one side of a DEX swap. Asset is a Jetton master or "TON".
+// swapLeg is one side of a DEX swap. Asset is a Jetton master or nativeTONSymbol.
 type swapLeg struct {
 	Asset       string `json:"asset"`
 	Source      string `json:"source"`
@@ -141,18 +141,6 @@ func (c *Client) fetchActionWindow(ctx context.Context, account string, startPag
 	return all, meta, true, nil
 }
 
-// actionHistory collects every action page for a wallet until a short page,
-// merging the indexer's token metadata across pages for asset resolution.
-// Hitting the page cap returns the collected actions with
-// errHistoryTruncated; callers keep the complete groups and stay incomplete.
-func (c *Client) actionHistory(ctx context.Context, account string) ([]tonAction, map[string]addressMeta, error) {
-	all, meta, truncated, err := c.fetchActionWindow(ctx, account, 0, maxActionPages)
-	if err == nil && truncated {
-		err = errHistoryTruncated
-	}
-	return all, meta, err
-}
-
 // groupActionsByTrace clusters successful actions by trace_id preserving
 // first-seen order. Failed actions never reach classification.
 func groupActionsByTrace(actions []tonAction) [][]tonAction {
@@ -180,7 +168,7 @@ func groupActionsByTrace(actions []tonAction) [][]tonAction {
 // a Jetton master looked up in the resolved metadata.
 func actionKind(asset string, masters map[string]tokenMeta) (symbol, tokenAddr string, decimals int, ok bool) {
 	if isNativeAsset(asset) {
-		return "TON", "", 9, true
+		return nativeTONSymbol, "", 9, true
 	}
 	m, found := masters[asset]
 	if !found || m.Symbol == "" {
@@ -214,7 +202,7 @@ func classifyActionGroup(ctx context.Context, wallet string, forms []string, mas
 			swaps = append(swaps, a)
 		case "stake_deposit":
 			stakes = append(stakes, a)
-		case "ton_transfer", "jetton_transfer", "jetton_burn":
+		case opTonTransfer, opJettonTransfer, opJettonBurn:
 			transfers = append(transfers, a)
 		default:
 			// call_contract, contract_deploy, ... carry no
@@ -350,10 +338,10 @@ func transferActivity(ctx context.Context, wallet string, forms []string, master
 	var inbound, burned bool
 	var err error
 	switch a.Type {
-	case "ton_transfer":
+	case opTonTransfer:
 		var d tonTransferDetails
-		if err := json.Unmarshal(a.Details, &d); err != nil {
-			return nil, fmt.Errorf("ton: invalid ton_transfer details %s: %w", a.ActionID, err)
+		if derr := json.Unmarshal(a.Details, &d); derr != nil {
+			return nil, fmt.Errorf("ton: invalid ton_transfer details %s: %w", a.ActionID, derr)
 		}
 		from, to := inWallet(d.Source), inWallet(d.Destination)
 		if !from && !to {
@@ -368,14 +356,14 @@ func transferActivity(ctx context.Context, wallet string, forms []string, master
 		if qty < minNativeTON {
 			return nil, nil
 		}
-		symbol, inbound, counterparty = "TON", to, d.Source
+		symbol, inbound, counterparty = nativeTONSymbol, to, d.Source
 		if from {
 			counterparty = d.Destination
 		}
-	case "jetton_transfer":
+	case opJettonTransfer:
 		var d jettonTransferDetails
-		if err := json.Unmarshal(a.Details, &d); err != nil {
-			return nil, fmt.Errorf("ton: invalid jetton_transfer details %s: %w", a.ActionID, err)
+		if derr := json.Unmarshal(a.Details, &d); derr != nil {
+			return nil, fmt.Errorf("ton: invalid jetton_transfer details %s: %w", a.ActionID, derr)
 		}
 		from, to := inWallet(d.Sender), inWallet(d.Receiver)
 		if !from && !to {
@@ -398,10 +386,10 @@ func transferActivity(ctx context.Context, wallet string, forms []string, master
 		if from {
 			counterparty = d.Receiver
 		}
-	case "jetton_burn":
+	case opJettonBurn:
 		var d jettonBurnDetails
-		if err := json.Unmarshal(a.Details, &d); err != nil {
-			return nil, fmt.Errorf("ton: invalid jetton_burn details %s: %w", a.ActionID, err)
+		if derr := json.Unmarshal(a.Details, &d); derr != nil {
+			return nil, fmt.Errorf("ton: invalid jetton_burn details %s: %w", a.ActionID, derr)
 		}
 		if !inWallet(d.Owner) {
 			return nil, nil
@@ -423,7 +411,7 @@ func transferActivity(ctx context.Context, wallet string, forms []string, master
 	default:
 		return nil, nil
 	}
-	prefix := "TON"
+	prefix := nativeTONSymbol
 	if tokenAddr != "" {
 		prefix = "JETTON"
 	}
@@ -445,7 +433,7 @@ func transferActivity(ctx context.Context, wallet string, forms []string, master
 		note += fmt.Sprintf("protocol deposit via %s (receipt settles asynchronously)", shortAddr(m.vault))
 	}
 	act := buildActivity(wallet, symbol, tokenAddr, qty, typ, rawType,
-		counterparty, a.ActionID, a.TraceID, a.End, amount, price, 0, "", note, false)
+		counterparty, a.ActionID, a.TraceID, a.End, amount, price, note)
 	if act != nil {
 		act.IsExternal = !tracked[counterparty]
 	}
@@ -466,7 +454,7 @@ func transferActivity(ctx context.Context, wallet string, forms []string, master
 // swapActivities renders a jetton_swap action as SELL-in + BUY-out legs
 // routed through USD: both legs share the USD value resolved from the best
 // priced side (stablecoin at $1, else TON at its historical price).
-func swapActivities(ctx context.Context, wallet string, forms []string, masters map[string]tokenMeta, value valueUSD, a tonAction, group []tonAction) ([]*brokerageActivity, map[string]bool, error) {
+func swapActivities(ctx context.Context, wallet string, forms []string, masters map[string]tokenMeta, value valueUSD, a tonAction, group []tonAction) ([]*brokerageActivity, map[string]bool, error) { //nolint:gocritic,unnamedResult // classifier triple (legs, consumed, err) is positional throughout the TON pipeline; names would collide with the err locals in every branch.
 	var d swapDetails
 	if err := json.Unmarshal(a.Details, &d); err != nil {
 		return nil, nil, fmt.Errorf("ton: invalid jetton_swap details %s: %w", a.ActionID, err)
@@ -511,8 +499,8 @@ func consumeSwapLegs(group []tonAction, forms []string, d swapDetails) map[strin
 	match := func(asset, source, dest, amount string) {
 		for _, a := range group {
 			switch a.Type {
-			case "ton_transfer":
-				if asset != "TON" {
+			case opTonTransfer:
+				if asset != nativeTONSymbol {
 					continue
 				}
 				var t tonTransferDetails
@@ -522,7 +510,7 @@ func consumeSwapLegs(group []tonAction, forms []string, d swapDetails) map[strin
 				if t.Source == source && t.Destination == dest && t.Value == amount {
 					out[a.ActionID] = true
 				}
-			case "jetton_transfer":
+			case opJettonTransfer:
 				var t jettonTransferDetails
 				if json.Unmarshal(a.Details, &t) != nil {
 					continue
@@ -601,12 +589,12 @@ func conversionLegs(wallet, inSymbol, inAddr string, inQty float64, outSymbol, o
 	return []*brokerageActivity{
 		buildActivity(wallet, inSymbol, inAddr, inQty,
 			brokerage.ActivitySell, sellRaw, sellCp,
-			actionID, traceID, at, usd, sellPrice, 0, "", note, false),
+			actionID, traceID, at, usd, sellPrice, note),
 		// +1s orders the pair deterministically (SELL, then BUY) in
 		// date-sorted views where equal timestamps would tie.
 		buildActivity(wallet, outSymbol, outAddr, outQty,
 			brokerage.ActivityBuy, buyRaw, buyCp,
-			actionID, traceID, at+1, usd, buyPrice, 0, "", note, false),
+			actionID, traceID, at+1, usd, buyPrice, note),
 	}
 }
 
@@ -622,7 +610,7 @@ func conversionLegs(wallet, inSymbol, inAddr string, inQty float64, outSymbol, o
 // traces yield nothing so legs classify separately. Matched group actions
 // return as consumed so primitives left over (e.g. excess change) still
 // classify on their own.
-func correlateDeposit(ctx context.Context, wallet string, forms []string, masters map[string]tokenMeta, value valueUSD, group []tonAction, tree *traceEnvelope, jettonWallets map[string]bool) ([]*brokerageActivity, map[string]bool, error) {
+func correlateDeposit(ctx context.Context, wallet string, forms []string, masters map[string]tokenMeta, value valueUSD, group []tonAction, tree *traceEnvelope, jettonWallets map[string]bool) ([]*brokerageActivity, map[string]bool, error) { //nolint:gocritic,unnamedResult // classifier triple (legs, consumed, err) is positional throughout the TON pipeline; names would collide with the err locals in every branch.
 	if tree == nil || len(tree.Txs) == 0 {
 		return nil, nil, nil
 	}
@@ -659,7 +647,7 @@ func correlateDeposit(ctx context.Context, wallet string, forms []string, master
 		return nil, nil, nil
 	}
 	_, allowedSenders := downstream(tree, vaultTx)
-	receipt, receiptAction := depositReceipt(group, tree, forms, masters, outflow, vault, allowedSenders, jettonWallets)
+	receipt, receiptAction := depositReceipt(tree, forms, masters, outflow, vault, allowedSenders, jettonWallets)
 	if receipt == nil {
 		return nil, nil, nil
 	}
@@ -698,7 +686,7 @@ func depositOutflow(group []tonAction, forms []string, masters map[string]tokenM
 	inWallet := func(addr string) bool { return slices.Contains(forms, addr) }
 	for _, a := range group {
 		switch a.Type {
-		case "ton_transfer":
+		case opTonTransfer:
 			var d tonTransferDetails
 			if err := json.Unmarshal(a.Details, &d); err != nil {
 				return nil, fmt.Errorf("ton: invalid ton_transfer details %s: %w", a.ActionID, err)
@@ -713,8 +701,8 @@ func depositOutflow(group []tonAction, forms []string, masters map[string]tokenM
 			if qty < minNativeTON {
 				continue
 			}
-			return &outflowLeg{action: a, symbol: "TON", qty: qty, counterparty: d.Destination}, nil
-		case "jetton_transfer":
+			return &outflowLeg{action: a, symbol: nativeTONSymbol, qty: qty, counterparty: d.Destination}, nil
+		case opJettonTransfer:
 			var d jettonTransferDetails
 			if err := json.Unmarshal(a.Details, &d); err != nil {
 				return nil, fmt.Errorf("ton: invalid jetton_transfer details %s: %w", a.ActionID, err)
@@ -735,7 +723,7 @@ func depositOutflow(group []tonAction, forms []string, masters map[string]tokenM
 			}
 			return &outflowLeg{action: a, symbol: cexcommon.NormalizeAsset(m.Symbol),
 				tokenAddr: m.Address, qty: qty, counterparty: d.Receiver, queryID: d.QueryID}, nil
-		case "jetton_burn":
+		case opJettonBurn:
 			var d jettonBurnDetails
 			if err := json.Unmarshal(a.Details, &d); err != nil {
 				return nil, fmt.Errorf("ton: invalid jetton_burn details %s: %w", a.ActionID, err)
@@ -773,7 +761,7 @@ type receiptLeg struct {
 // transfer and a mint message wins outright; otherwise an inbound transfer
 // from intake-or-downstream, or a mint credited to the user's jetton wallet
 // (or attributed via response_address) with the vault as source, pairs.
-func depositReceipt(group []tonAction, tree *traceEnvelope, forms []string, masters map[string]tokenMeta, outflow *outflowLeg, vault string, allowedSenders map[string]bool, jettonWallets map[string]bool) (*receiptLeg, *tonAction) {
+func depositReceipt(tree *traceEnvelope, forms []string, masters map[string]tokenMeta, outflow *outflowLeg, vault string, allowedSenders map[string]bool, jettonWallets map[string]bool) (*receiptLeg, *tonAction) {
 	// Explicit link first: the vault echoes the deposit query_id in the
 	// mint message.
 	if outflow.queryID != "" {
@@ -791,7 +779,7 @@ func depositReceipt(group []tonAction, tree *traceEnvelope, forms []string, mast
 			continue
 		}
 		switch a.Type {
-		case "ton_transfer", "jetton_transfer":
+		case opTonTransfer, opJettonTransfer:
 			r, ok := inboundReceipt(a, forms, masters, outflow)
 			if !ok || r == nil {
 				continue
@@ -823,7 +811,7 @@ func inboundReceipt(a tonAction, forms []string, masters map[string]tokenMeta, o
 	var symbol, tokenAddr, sender string
 	var qty float64
 	switch a.Type {
-	case "ton_transfer":
+	case opTonTransfer:
 		var d tonTransferDetails
 		if err := json.Unmarshal(a.Details, &d); err != nil {
 			return nil, false
@@ -835,8 +823,8 @@ func inboundReceipt(a tonAction, forms []string, masters map[string]tokenMeta, o
 		if qty, err = scaledAmount(d.Value, 9); err != nil || qty < minNativeTON {
 			return nil, false
 		}
-		symbol, sender = "TON", d.Source
-	case "jetton_transfer":
+		symbol, sender = nativeTONSymbol, d.Source
+	case opJettonTransfer:
 		var d jettonTransferDetails
 		if err := json.Unmarshal(a.Details, &d); err != nil {
 			return nil, false
@@ -887,7 +875,7 @@ func mintReceipt(m mintInfo, masters map[string]tokenMeta, jettonWallets map[str
 
 // stakeActivities renders a stake_deposit action as SELL staked TON + BUY
 // liquid-staking tokens, priced through USD like swaps.
-func stakeActivities(ctx context.Context, wallet string, forms []string, masters map[string]tokenMeta, value valueUSD, a tonAction, group []tonAction) ([]*brokerageActivity, map[string]bool, error) {
+func stakeActivities(ctx context.Context, wallet string, forms []string, masters map[string]tokenMeta, value valueUSD, a tonAction, group []tonAction) ([]*brokerageActivity, map[string]bool, error) { //nolint:gocritic,unnamedResult // classifier triple (legs, consumed, err) is positional throughout the TON pipeline; names would collide with the err locals in every branch.
 	var d stakeDetails
 	if err := json.Unmarshal(a.Details, &d); err != nil {
 		return nil, nil, fmt.Errorf("ton: invalid stake_deposit details %s: %w", a.ActionID, err)
@@ -908,9 +896,9 @@ func stakeActivities(ctx context.Context, wallet string, forms []string, masters
 		return nil, nil, fmt.Errorf("ton: invalid minted amount %s: %w", a.ActionID, err)
 	}
 	outSymbol := cexcommon.NormalizeAsset(m.Symbol)
-	usd, ok := value.swapValue(ctx, "TON", "", inQty, outSymbol, m.Address, outQty, a.End)
+	usd, ok := value.swapValue(ctx, nativeTONSymbol, "", inQty, outSymbol, m.Address, outQty, a.End)
 	note := fmt.Sprintf("stake %g TON → %g %s via %s", inQty, outQty, outSymbol, d.Provider)
-	legs := conversionLegs(wallet, "TON", "", inQty, outSymbol, m.Address, outQty, a.End,
+	legs := conversionLegs(wallet, nativeTONSymbol, "", inQty, outSymbol, m.Address, outQty, a.End,
 		"STAKE_SELL", "STAKE_BUY", d.Pool, d.Pool,
 		a.ActionID, a.TraceID, note, usd, ok)
 	return legs, consumeStakeLegs(group, forms, d), nil
@@ -925,7 +913,7 @@ func consumeStakeLegs(group []tonAction, forms []string, d stakeDetails) map[str
 	out := make(map[string]bool)
 	for _, a := range group {
 		switch a.Type {
-		case "ton_transfer":
+		case opTonTransfer:
 			var t tonTransferDetails
 			if json.Unmarshal(a.Details, &t) != nil {
 				continue
@@ -933,7 +921,7 @@ func consumeStakeLegs(group []tonAction, forms []string, d stakeDetails) map[str
 			if inWallet(t.Source) && t.Destination == d.Pool && t.Value == d.Amount {
 				out[a.ActionID] = true
 			}
-		case "jetton_transfer":
+		case opJettonTransfer:
 			var t jettonTransferDetails
 			if json.Unmarshal(a.Details, &t) != nil {
 				continue

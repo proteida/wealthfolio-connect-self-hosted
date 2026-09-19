@@ -305,7 +305,7 @@ func parseSteamTime(s string) time.Time {
 // anchor, so seeding it with the newest imported timestamp would skip
 // newer events. Newness is detected by walking from the top and stopping
 // at the watermark instead.
-func (c *Client) fetchHistory(ctx context.Context, start *historyCursor, stopBefore time.Time) ([]historyEvent, map[string]historyDesc, bool, *historyCursor, error) {
+func (c *Client) fetchHistory(ctx context.Context, start *historyCursor, stopBefore time.Time) ([]historyEvent, map[string]historyDesc, bool, *historyCursor, error) { //nolint:gocritic,unnamedResult // five positional results mirror the walk state; names would collide with the resume/cursor/err locals used throughout the pagination loop.
 	var all []historyEvent
 	descs := map[string]historyDesc{}
 	var cursor *historyCursor
@@ -351,7 +351,7 @@ func (c *Client) fetchHistory(ctx context.Context, start *historyCursor, stopBef
 			// Reached already-covered territory on a fresh walk:
 			// everything newer is imported, nothing older is needed.
 			// Zero means no parseable timestamps: never stop on it.
-			if min := pageMinTime(rows); !min.IsZero() && !min.After(stopBefore.Add(time.Second)) {
+			if earliest := pageMinTime(rows); !earliest.IsZero() && !earliest.After(stopBefore.Add(time.Second)) {
 				return all, descs, true, nil, nil
 			}
 		}
@@ -359,7 +359,10 @@ func (c *Client) fetchHistory(ctx context.Context, start *historyCursor, stopBef
 			return all, descs, true, nil, nil
 		}
 		var nxt historyCursor
-		if err := json.Unmarshal(env.Cursor, &nxt); err != nil || nxt.empty() {
+		if err := json.Unmarshal(env.Cursor, &nxt); err != nil {
+			return all, descs, false, cursor, fmt.Errorf("steam: history cursor decode: %w", err)
+		}
+		if nxt.empty() {
 			return all, descs, false, nil, nil
 		}
 		if seenCursor[nxt.key()] {
@@ -375,14 +378,14 @@ func (c *Client) fetchHistory(ctx context.Context, start *historyCursor, stopBef
 // pageMinTime returns the oldest non-zero timestamp in rows (zero when
 // none parse, which must never trigger a watermark stop).
 func pageMinTime(rows []historyEvent) time.Time {
-	min := time.Time{}
+	earliest := time.Time{}
 	for _, ev := range rows {
 		if ev.Timestamp.IsZero() {
 			continue
 		}
-		if min.IsZero() || ev.Timestamp.Before(min) {
-			min = ev.Timestamp
+		if earliest.IsZero() || ev.Timestamp.Before(earliest) {
+			earliest = ev.Timestamp
 		}
 	}
-	return min
+	return earliest
 }

@@ -46,7 +46,7 @@ func (c *Client) Ping(ctx context.Context) error {
 }
 
 // Get returns the cached price, or found=false on a miss.
-func (c *Client) Get(ctx context.Context, key string) (float64, bool, error) {
+func (c *Client) Get(ctx context.Context, key string) (price float64, found bool, err error) {
 	if c.rdb == nil {
 		return 0, false, nil
 	}
@@ -57,9 +57,12 @@ func (c *Client) Get(ctx context.Context, key string) (float64, bool, error) {
 	if err != nil {
 		return 0, false, err
 	}
-	price, err := strconv.ParseFloat(raw, 64)
+	price, err = strconv.ParseFloat(raw, 64)
 	if err != nil {
-		return 0, false, nil
+		// An unparseable entry reads as a miss so callers refetch;
+		// surfacing it as an error would fail reads that should degrade
+		// to provider calls. See the fail-open contract above.
+		return 0, false, nil //nolint:nilerr // corrupt cache entry degrades to a miss by design.
 	}
 	return price, true, nil
 }
@@ -73,11 +76,11 @@ func (c *Client) Set(ctx context.Context, key string, price float64, ttl time.Du
 }
 
 // GetRaw returns a cached blob.
-func (c *Client) GetRaw(ctx context.Context, key string) ([]byte, bool, error) {
+func (c *Client) GetRaw(ctx context.Context, key string) (raw []byte, found bool, err error) {
 	if c.rdb == nil {
 		return nil, false, nil
 	}
-	raw, err := c.rdb.Get(ctx, key).Bytes()
+	raw, err = c.rdb.Get(ctx, key).Bytes()
 	if errors.Is(err, redis.Nil) {
 		return nil, false, nil
 	}
@@ -108,16 +111,25 @@ func (c *Client) Delete(ctx context.Context, key string) error {
 // configured.
 type disabled struct{}
 
-func (disabled) Get(context.Context, string) (float64, bool, error) {
+// Get always misses: there is no Redis to read from.
+func (disabled) Get(context.Context, string) (price float64, found bool, err error) {
 	return 0, false, nil
 }
+
+// Set discards the write: without Redis there is nothing to persist to.
 func (disabled) Set(context.Context, string, float64, time.Duration) error {
 	return nil
 }
-func (disabled) GetRaw(context.Context, string) ([]byte, bool, error) {
+
+// GetRaw always misses, mirroring Get for blob entries.
+func (disabled) GetRaw(context.Context, string) (raw []byte, found bool, err error) {
 	return nil, false, nil
 }
+
+// SetRaw discards the write, mirroring Set for blob entries.
 func (disabled) SetRaw(context.Context, string, []byte, time.Duration) error {
 	return nil
 }
+
+// Delete is a no-op without Redis.
 func (disabled) Delete(context.Context, string) error { return nil }

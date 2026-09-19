@@ -62,6 +62,9 @@ func (c *Client) ConfigureHistory(history repository.ActivityRepository, symbols
 	}
 }
 
+// SnapshotCommitted publishes the pending trade cursor after the sync
+// engine confirms the snapshot, so a failed run replays instead of
+// skipping trades.
 func (c *Client) SnapshotCommitted() {
 	if f, ok := c.fetcher.(*realFetcher); ok {
 		f.progress = f.pending

@@ -1,10 +1,9 @@
 package steam
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 )
@@ -22,7 +21,10 @@ func (c *SteamAuthClient) Refresh(ctx context.Context) ([]*http.Cookie, error) {
 	if err != nil {
 		return nil, err
 	}
-	cookies, _ := v.([]*http.Cookie)
+	cookies, ok := v.([]*http.Cookie)
+	if !ok {
+		return nil, steamErr("auth", fmt.Errorf("unexpected refresh result type %T", v))
+	}
 	return cookies, nil
 }
 
@@ -58,6 +60,8 @@ type doerTransport struct {
 	check func(string) bool
 }
 
+// RoundTrip adapts the HTTPDoer to http.RoundTripper, constraining
+// redirects through the auth allowlist check described on doerTransport.
 func (t doerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.doer == nil {
 		return http.DefaultTransport.RoundTrip(req)
@@ -75,7 +79,7 @@ func (t doerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 			return nil
 		}
-		return guarded.Do(req)
+		return guarded.Do(req) //nolint:gosec // guarded client inherits the allowlisted CheckRedirect above, so redirects cannot leave Steam.
 	}
 	return t.doer.Do(req)
 }
@@ -92,6 +96,8 @@ type authRetryTransport struct {
 	auth *SteamAuthClient
 }
 
+// RoundTrip attaches jar cookies and retries once after a refresh,
+// as documented on authRetryTransport.
 func (t *authRetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if !t.auth.allowlisted(req.URL.String()) {
 		return nil, steamErr("auth", fmt.Errorf("refusing credentials outside allowlist: %s", redactURL(req.URL.String())))
@@ -108,11 +114,11 @@ func (t *authRetryTransport) RoundTrip(req *http.Request) (*http.Response, error
 	}
 	_ = resp.Body.Close()
 	// One refresh, one retry. Bodies are rewindable for retries below.
-	if _, err := t.auth.Refresh(req.Context()); err != nil {
-		if isReauth(err) {
-			return nil, err
+	if _, refreshErr := t.auth.Refresh(req.Context()); refreshErr != nil {
+		if isReauth(refreshErr) {
+			return nil, refreshErr
 		}
-		return nil, steamErr("auth", fmt.Errorf("refresh before retry failed: %w", err))
+		return nil, steamErr("auth", fmt.Errorf("refresh before retry failed: %w", refreshErr))
 	}
 	retry := req.Clone(req.Context())
 	// Drop the stale Cookie header: the refreshed jar owns cookies now.
@@ -135,15 +141,15 @@ func (t *authRetryTransport) RoundTrip(req *http.Request) (*http.Response, error
 		}
 		retry.Body = body
 	}
-	resp2, err := t.base.RoundTrip(retry)
-	if err != nil {
-		return resp2, err
+	retryResp, retryErr := t.base.RoundTrip(retry)
+	if retryErr != nil {
+		return retryResp, retryErr
 	}
-	if isAuthFailure(resp2) {
-		_ = resp2.Body.Close()
+	if isAuthFailure(retryResp) {
+		_ = retryResp.Body.Close()
 		return nil, steamErr("auth", fmt.Errorf("still unauthenticated after refresh"))
 	}
-	return resp2, nil
+	return retryResp, nil
 }
 
 // cookieHeader renders jar cookies for a retry request.
@@ -185,19 +191,5 @@ func isLoginPage(body []byte) bool {
 }
 
 func isReauth(err error) bool {
-	return err != nil && (err == ErrSteamReauthenticationRequired || strings.Contains(err.Error(), "reauthentication required"))
-}
-
-// peekBody reads up to n bytes for sniffing while keeping the body
-// consumable for the real decode.
-func peekBody(resp *http.Response, n int64) ([]byte, error) {
-	if resp == nil || resp.Body == nil {
-		return nil, nil
-	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, n))
-	if err != nil {
-		return nil, err
-	}
-	resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(raw), resp.Body))
-	return raw, nil
+	return err != nil && (errors.Is(err, ErrSteamReauthenticationRequired) || strings.Contains(err.Error(), "reauthentication required"))
 }

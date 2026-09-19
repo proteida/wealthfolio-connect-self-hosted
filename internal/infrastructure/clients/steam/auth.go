@@ -107,10 +107,10 @@ type SteamAuthClient struct {
 	// non-community domain.
 	cookieTTL time.Duration
 
-	mu       sync.Mutex
-	jar      *cookiejar.Jar
-	rotated  string
-	rotated_ bool
+	mu          sync.Mutex
+	jar         *cookiejar.Jar
+	rotated     string
+	rotatedFlag bool
 	// lastCookies/lastRefresh short-circuit repeat refreshes.
 	lastCookies []*http.Cookie
 	lastRefresh time.Time
@@ -120,11 +120,16 @@ type SteamAuthClient struct {
 
 // NewSteamAuthClient builds the authenticator. httpClient may be nil (a
 // 15s-timeout client is used). finalizeURL overrides the endpoint in tests.
+// It returns nil only when the static cookie jar cannot be constructed,
+// which cannot happen with the fixed valid options below.
 func NewSteamAuthClient(steamID, refreshToken string, httpClient HTTPDoer, finalizeURL string) *SteamAuthClient {
 	if finalizeURL == "" {
 		finalizeURL = finalizeLoginURL
 	}
-	jar, _ := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
+	jar, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
+	if err != nil {
+		return nil
+	}
 	c := &SteamAuthClient{
 		steamID: steamID, refreshToken: refreshToken,
 		httpClient: httpClient, finalizeURL: finalizeURL, jar: jar,
@@ -155,17 +160,21 @@ func (c *SteamAuthClient) SetLogger(log zerolog.Logger) { c.log = log }
 func (c *SteamAuthClient) RotatedToken() (string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.rotated, c.rotated_
+	return c.rotated, c.rotatedFlag
 }
 
 // recordRotation stores a replacement token and notes the required action.
-// The token itself is never logged.
+// The token itself is never logged. It is a hook for Steam-issued
+// replacement tokens observed outside the login exchange and is read back
+// through RotatedToken (see also the rotation integration test).
+//
+//nolint:unused // no transfer has surfaced a rotation yet; the hook must exist before it can be recorded.
 func (c *SteamAuthClient) recordRotation(token string) {
 	if token == "" {
 		return
 	}
 	c.mu.Lock()
-	c.rotated, c.rotated_ = token, true
+	c.rotated, c.rotatedFlag = token, true
 	c.mu.Unlock()
 }
 
@@ -210,7 +219,7 @@ func (c *SteamAuthClient) allowlisted(rawURL string) bool {
 // allowHosts (tests only): httptest servers are http, not https.
 func isTestHostOverride(allowHosts []string, host string) bool {
 	for _, h := range allowHosts {
-		if host == strings.ToLower(h) || strings.HasSuffix(host, "."+strings.ToLower(h)) {
+		if strings.EqualFold(host, h) || strings.HasSuffix(host, "."+strings.ToLower(h)) {
 			return true
 		}
 	}
@@ -250,7 +259,10 @@ func (c *SteamAuthClient) GetWebCookies(ctx context.Context) ([]*http.Cookie, er
 	if err != nil {
 		return nil, err
 	}
-	cookies, _ := v.([]*http.Cookie)
+	cookies, ok := v.([]*http.Cookie)
+	if !ok {
+		return nil, steamErr("auth", fmt.Errorf("unexpected refresh result type %T", v))
+	}
 	return cookies, nil
 }
 
@@ -313,12 +325,12 @@ func (c *SteamAuthClient) refresh(ctx context.Context) ([]*http.Cookie, error) {
 		// Forward-compatible rotation detection: surface (never persist)
 		// any replacement refresh token Steam embeds in cookie values.
 		if strings.EqualFold(cookie.Name, "refresh_token") && cookie.Value != "" {
-			c.rotated, c.rotated_ = cookie.Value, true
+			c.rotated, c.rotatedFlag = cookie.Value, true
 		}
 	}
 	c.lastCookies = cookies
 	c.lastRefresh = time.Now()
-	rotated := c.rotated_
+	rotated := c.rotatedFlag
 	for _, cookie := range cookies {
 		names = append(names, cookie.Name+"@"+cookieDomain(cookie))
 	}
@@ -459,13 +471,15 @@ func (c *SteamAuthClient) do(req *http.Request) (*http.Response, error) {
 		}
 		return nil
 	}
-	resp, err := guarded.Do(req)
+	resp, err := guarded.Do(req) //nolint:gosec // request targets are constrained to the Steam host allowlist (see allowlisted).
 	if err != nil {
 		return nil, err
 	}
 	if resp != nil && resp.Request != nil && resp.Request.URL != nil &&
 		!inner.allowlisted(resp.Request.URL.String()) {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		// Best-effort drain before discarding an off-allowlist response;
+		// a drain failure changes nothing about the outcome.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20)) //nolint:errcheck // best-effort body drain, outcome already decided.
 		_ = resp.Body.Close()
 		return nil, steamErr("auth", fmt.Errorf("response outside allowlist: %s", redactURL(resp.Request.URL.String())))
 	}
@@ -490,7 +504,7 @@ func (c *SteamAuthClient) postFormRaw(ctx context.Context, rawURL string, form m
 	if err := w.Close(); err != nil {
 		return nil, 0, steamErr("auth form", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, &body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, &body) //nolint:gosec // callers pass only allowlisted Steam transfer URLs (see allowlisted).
 	if err != nil {
 		return nil, 0, steamErr("auth request", err)
 	}

@@ -319,7 +319,7 @@ func (c *Client) getWithRetry(ctx context.Context, rawURL string, community bool
 }
 
 func (c *Client) getOnce(ctx context.Context, rawURL string, community bool, into any) (bool, time.Duration, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
 	if err != nil {
 		return false, 0, steamErr("request", err)
 	}

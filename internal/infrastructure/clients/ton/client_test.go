@@ -210,7 +210,7 @@ var _ = Describe("Client fetching", func() {
 						},
 					}),
 					// Primitive legs of the same swap must not double count.
-					action("sw1-leg", "trace-swap", "jetton_transfer", true, map[string]any{
+					action("sw1-leg", "trace-swap", opJettonTransfer, true, map[string]any{
 						"asset": usdMaster, "sender": testRaw,
 						"receiver": "0:POOL", "amount": "100000000",
 					}),
@@ -221,17 +221,17 @@ var _ = Describe("Client fetching", func() {
 						"tokens_minted": "9000000000",
 						"asset":         testMaster,
 					}),
-					action("d1", "trace-dep", "ton_transfer", true, map[string]any{
+					action("d1", "trace-dep", opTonTransfer, true, map[string]any{
 						"source": "0:STRANGER", "destination": testRaw, "value": "2000000000",
 					}),
-					action("w1", "trace-wd", "jetton_transfer", true, map[string]any{
+					action("w1", "trace-wd", opJettonTransfer, true, map[string]any{
 						"asset": testMaster, "sender": testRaw,
 						"receiver": "0:STRANGER", "amount": "1000000000",
 					}),
-					action("t1", "trace-internal", "ton_transfer", true, map[string]any{
+					action("t1", "trace-internal", opTonTransfer, true, map[string]any{
 						"source": testRaw, "destination": "0:FRIEND", "value": "1000000000",
 					}),
-					action("f1", "trace-fail", "ton_transfer", false, map[string]any{
+					action("f1", "trace-fail", opTonTransfer, false, map[string]any{
 						"source": "0:X", "destination": testRaw, "value": "1000000000",
 					}),
 					action("c1", "trace-call", "call_contract", true, map[string]any{
@@ -279,14 +279,14 @@ var _ = Describe("Client fetching", func() {
 		// SELL before BUY: the buy leg carries +1s so date-sorted views
 		// keep causal order where equal timestamps would tie.
 		Expect(buy.TradeDate.Unix()).To(Equal(sell.TradeDate.Unix() + 1))
-		stakeSell := leg(brokerage.ActivitySell, "STAKE_SELL", "TON")
+		stakeSell := leg(brokerage.ActivitySell, "STAKE_SELL", nativeTONSymbol)
 		Expect(stakeSell.RawType).To(Equal("STAKE_SELL"))
 		Expect(stakeSell.Units).To(Equal(10.0))
 		Expect(stakeSell.Amount).To(Equal(100.0))
 		stakeBuy := leg(brokerage.ActivityBuy, "STAKE_BUY", "TSTON")
 		Expect(stakeBuy.RawType).To(Equal("STAKE_BUY"))
 		Expect(stakeBuy.TradeDate.Unix()).To(Equal(stakeSell.TradeDate.Unix() + 1))
-		dep := leg(brokerage.ActivityTransferIn, "TON_TRANSFER_IN", "TON")
+		dep := leg(brokerage.ActivityTransferIn, "TON_TRANSFER_IN", nativeTONSymbol)
 		Expect(dep.Units).To(Equal(2.0))
 		wd := leg(brokerage.ActivityTransferOut, "JETTON_TRANSFER_OUT", "TSTON")
 		Expect(wd.Units).To(Equal(1.0))
@@ -323,7 +323,7 @@ var _ = Describe("Client fetching", func() {
 					return
 				}
 				writeJSON(w, map[string]any{"actions": []any{
-					action("t1", "tr1", "ton_transfer", true, map[string]any{
+					action("t1", "tr1", opTonTransfer, true, map[string]any{
 						"source": testRaw, "destination": "0:FRIEND", "value": "1000000000",
 					}),
 				}})
@@ -357,12 +357,12 @@ var _ = Describe("Client fetching", func() {
 				rows := make([]any, 0)
 				if r.URL.Query().Get("offset") == "0" {
 					for i := 0; i < actionPageLimit; i++ {
-						rows = append(rows, action(fmt.Sprintf("a%d", i), fmt.Sprintf("tr%d", i), "ton_transfer", true, map[string]any{
+						rows = append(rows, action(fmt.Sprintf("a%d", i), fmt.Sprintf("tr%d", i), opTonTransfer, true, map[string]any{
 							"source": "0:STRANGER", "destination": testRaw, "value": "1000000000",
 						}))
 					}
 				} else {
-					rows = append(rows, action("last", "tr-last", "ton_transfer", true, map[string]any{
+					rows = append(rows, action("last", "tr-last", opTonTransfer, true, map[string]any{
 						"source": "0:STRANGER", "destination": testRaw, "value": "1000000000",
 					}))
 				}
@@ -495,7 +495,7 @@ var _ = Describe("Client fetching", func() {
 				rows = append(rows, action(
 					fmt.Sprintf("a-%d-%d", offset, i),
 					fmt.Sprintf("t-%d-%d", offset, i),
-					"ton_transfer", true,
+					opTonTransfer, true,
 					map[string]any{"source": "0:STRANGER", "destination": testRaw, "value": "1000000000"},
 				))
 			}
@@ -531,7 +531,7 @@ var _ = Describe("Client fetching", func() {
 		// dropped and the next run replays from the start instead of
 		// skipping unsaved rows.
 		offsets = nil
-		acts, _, truncated, err = c.walletActionHistory(context.Background(), testRaw)
+		_, _, truncated, err = c.walletActionHistory(context.Background(), testRaw)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(truncated).To(BeTrue())
 		Expect(offsets[0]).To(Equal(0))
@@ -544,7 +544,7 @@ var _ = Describe("Client fetching", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(truncated).To(BeFalse())
 		Expect(acts).To(HaveLen(2000 + 2010))
-		Expect(c.tailCursor(testRaw)).To(Equal(0))
+		Expect(c.tailCursor(context.Background(), testRaw)).To(Equal(0))
 		Expect(offsets).To(Equal([]int{0, 1000, 19000, 20000, 21000}))
 	})
 
@@ -607,7 +607,7 @@ var _ = Describe("Client fetching", func() {
 			for i := 0; i < n; i++ {
 				rows = append(rows, action(
 					fmt.Sprintf("c-%d-%d", offset, i), fmt.Sprintf("ct-%d-%d", offset, i),
-					"ton_transfer", true,
+					opTonTransfer, true,
 					map[string]any{"source": "0:STRANGER", "destination": testRaw, "value": "1000000000"},
 				))
 			}
@@ -649,7 +649,7 @@ var _ = Describe("Client fetching", func() {
 			for i := 0; i < n; i++ {
 				rows = append(rows, action(
 					fmt.Sprintf("d-%d-%d", offset, i), fmt.Sprintf("dt-%d-%d", offset, i),
-					"ton_transfer", true,
+					opTonTransfer, true,
 					map[string]any{"source": "0:STRANGER", "destination": testRaw, "value": "1000000000"},
 				))
 			}
@@ -674,7 +674,7 @@ var _ = Describe("Client fetching", func() {
 			for i := 0; i < n; i++ {
 				rows = append(rows, action(
 					fmt.Sprintf("b-%d", i), fmt.Sprintf("bt-%d", i),
-					"ton_transfer", true,
+					opTonTransfer, true,
 					map[string]any{"source": "0:STRANGER", "destination": testRaw, "value": "1000000000"},
 				))
 			}

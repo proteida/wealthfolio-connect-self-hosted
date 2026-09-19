@@ -39,7 +39,7 @@ var _ = Describe("Market history parsing", func() {
 		tx, ok := parseMarketBlock(row(`<span>Listed on Community Market</span><span>9 May, 2025</span><span data-market-hash-name="AK"></span>`))
 		Expect(ok).To(BeTrue())
 		Expect(tx.Type).To(Equal("listing"))
-		tx, ok = parseMarketBlock(row(`<span>Listing cancelled</span><span>9 May, 2025</span><span data-market-hash-name="AK"></span>`))
+		tx, ok = parseMarketBlock(row(`<span>Listing canceled</span><span>9 May, 2025</span><span data-market-hash-name="AK"></span>`))
 		Expect(ok).To(BeTrue())
 		Expect(tx.Type).To(Equal("cancel"))
 	})

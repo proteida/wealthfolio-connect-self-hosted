@@ -26,7 +26,7 @@ var _ = Describe("Resolver", func() {
 	It("matches exact on absent-before plus event", func() {
 		before := map[string]bool{"old": true}
 		evs := []historyEvent{{ExternalID: "e1", Timestamp: at, Kind: EventMarketBuy, MarketHashName: "AK", AssetID: "new", ClassID: "1"}}
-		resolved, unmatched := Resolve([]InventoryItem{owned("new", "1", "AK", 1)}, before, evs, nil, nil, at)
+		resolved, unmatched := resolve([]InventoryItem{owned("new", "1", "AK", 1)}, before, evs, nil, nil, at)
 		Expect(resolved).To(HaveLen(1))
 		Expect(resolved[0].MatchConfidence).To(Equal(domainsteam.MatchExact))
 		Expect(resolved[0].MatchMethod).To(Equal(domainsteam.MatchSnapshotEvent))
@@ -39,7 +39,7 @@ var _ = Describe("Resolver", func() {
 			TradeID: "t1", Timestamp: at,
 			Received: []domainsteam.TradeAsset{{AssetID: "99", NewAssetID: "cur", Quantity: 1}},
 		}}
-		resolved, _ := Resolve([]InventoryItem{owned("cur", "2", "AWP", 1)}, nil, nil, nil, trades, at)
+		resolved, _ := resolve([]InventoryItem{owned("cur", "2", "AWP", 1)}, nil, nil, nil, trades, at)
 		Expect(resolved[0].MatchConfidence).To(Equal(domainsteam.MatchExact))
 		Expect(resolved[0].Type).To(Equal(domainsteam.AcquisitionTrade))
 		Expect(resolved[0].Reference).To(Equal("t1"))
@@ -50,7 +50,7 @@ var _ = Describe("Resolver", func() {
 		market := map[string]domainsteam.MarketTransaction{
 			"market:9": {ExternalID: "market:9", Type: "buy", Timestamp: at.Add(time.Hour), MarketHashName: "AK", Quantity: 1, Gross: 23.41, Currency: "USD"},
 		}
-		resolved, unmatched := Resolve([]InventoryItem{owned("x", "1", "AK", 1)}, nil, evs, market, nil, at)
+		resolved, unmatched := resolve([]InventoryItem{owned("x", "1", "AK", 1)}, nil, evs, market, nil, at)
 		Expect(resolved[0].MatchConfidence).To(Equal(domainsteam.MatchHigh))
 		Expect(resolved[0].MatchMethod).To(Equal(domainsteam.MatchHistoryMarket))
 		Expect(*resolved[0].CostBasis).To(BeNumerically("~", 23.41, 1e-9))
@@ -60,7 +60,7 @@ var _ = Describe("Resolver", func() {
 
 	It("matches medium on attribute proximity", func() {
 		evs := []historyEvent{{ExternalID: "e1", Timestamp: at, Kind: EventReceived, ClassID: "1", InstanceID: "0", MarketHashName: "AK", Quantity: 1}}
-		resolved, _ := Resolve([]InventoryItem{owned("x", "1", "AK", 1)}, nil, evs, nil, nil, at)
+		resolved, _ := resolve([]InventoryItem{owned("x", "1", "AK", 1)}, nil, evs, nil, nil, at)
 		Expect(resolved[0].MatchConfidence).To(Equal(domainsteam.MatchMedium))
 		Expect(resolved[0].Type).To(Equal(domainsteam.AcquisitionTrade))
 	})
@@ -73,14 +73,14 @@ var _ = Describe("Resolver", func() {
 		market := map[string]domainsteam.MarketTransaction{
 			"market:9": {ExternalID: "market:9", Type: "buy", Timestamp: at, MarketHashName: "AK", Quantity: 1, Gross: 5, Currency: "USD"},
 		}
-		resolved, unmatched := Resolve([]InventoryItem{owned("x", "1", "AK", 1)}, nil, evs, market, nil, at)
+		resolved, unmatched := resolve([]InventoryItem{owned("x", "1", "AK", 1)}, nil, evs, market, nil, at)
 		Expect(resolved[0].MatchConfidence).To(Equal(domainsteam.MatchHigh))
 		Expect(unmatched).To(HaveLen(1))
 		Expect(unmatched[0].ExternalID).To(Equal("e1"))
 	})
 
 	It("never pretends an inference is exact", func() {
-		resolved, unmatched := Resolve([]InventoryItem{owned("x", "1", "AK", 1)}, nil, nil, nil, nil, at)
+		resolved, unmatched := resolve([]InventoryItem{owned("x", "1", "AK", 1)}, nil, nil, nil, nil, at)
 		Expect(resolved[0].MatchConfidence).To(Equal(domainsteam.MatchUnresolved))
 		Expect(unmatched).To(BeEmpty())
 	})
@@ -91,7 +91,7 @@ var _ = Describe("Resolver", func() {
 			owned("a2", "7", "Dreams & Nightmares Case", 1),
 			owned("solo", "1", "AK", 1),
 		}
-		resolved, _ := Resolve(items, nil, nil, nil, nil, at)
+		resolved, _ := resolve(items, nil, nil, nil, nil, at)
 		lots := buildLots(resolved)
 		Expect(lots).To(HaveLen(1))
 		Expect(lots[0].MarketHashName).To(Equal("Dreams & Nightmares Case"))

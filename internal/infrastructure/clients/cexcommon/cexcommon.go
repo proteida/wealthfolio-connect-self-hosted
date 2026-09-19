@@ -16,6 +16,10 @@ import (
 	domainsync "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/sync"
 )
 
+// quoteUSD is the canonical USD currency code shared by every translation
+// below (balances, fees and quote-asset checks).
+const quoteUSD = "USD"
+
 // Balance is the normalised per-asset row that each CEX client produces.
 type Balance struct {
 	Asset    string  // e.g. "BTC"
@@ -76,9 +80,9 @@ func Translate(slug, displayName string, s Snapshot) domainsync.BrokerSnapshot {
 		Name:                   displayName + " Spot",
 		Type:                   brokerage.AccountTypeCryptocurrency,
 		RawType:                "CRYPTO_SPOT",
-		Currency:               "USD",
+		Currency:               quoteUSD,
 		BalanceTotal:           totalUSD,
-		BalanceCurrency:        "USD",
+		BalanceCurrency:        quoteUSD,
 		BrokerageAuthorization: slug + "-auth",
 		InstitutionName:        displayName,
 		SyncEnabled:            true,
@@ -104,7 +108,7 @@ func Translate(slug, displayName string, s Snapshot) domainsync.BrokerSnapshot {
 	}
 
 	cashBalance := brokerage.Balance{
-		Currency: brokerage.Currency{Code: "USD"},
+		Currency: brokerage.Currency{Code: quoteUSD},
 	}
 	positions := make([]brokerage.Position, 0, len(s.Balances))
 	for _, b := range s.Balances {
@@ -135,7 +139,7 @@ func Translate(slug, displayName string, s Snapshot) domainsync.BrokerSnapshot {
 				Name:        asset,
 				Type:        brokerage.SymbolType{Code: "CRYPTO", IsSupported: true, Description: "Cryptocurrency"},
 				Exchange:    brokerage.Exchange{Code: strings.ToUpper(slug), Name: displayName},
-				Currency:    brokerage.Currency{Code: "USD"},
+				Currency:    brokerage.Currency{Code: quoteUSD},
 			},
 			Units: b.Quantity,
 			Price: b.PriceUSD,
@@ -143,7 +147,7 @@ func Translate(slug, displayName string, s Snapshot) domainsync.BrokerSnapshot {
 			// carries market valuation, not acquisition history. Stamping
 			// the market price as basis would reset the apparent cost
 			// basis on every sync.
-			Currency: brokerage.Currency{Code: "USD"},
+			Currency: brokerage.Currency{Code: quoteUSD},
 		})
 	}
 
@@ -213,10 +217,10 @@ func newTradeActivity(t Trade, accountID, asset string, activityType brokerage.A
 	// fabricates valuations (1 ETH for 0.05 BTC is not a $0.05 purchase), so
 	// non-USD quotes keep their own currency and are flagged for review
 	// until a historical quote/USD conversion exists.
-	currency := brokerage.Currency{Code: "USD"}
+	currency := brokerage.Currency{Code: quoteUSD}
 	needsReview := false
 	description := ""
-	if q := NormalizeAsset(t.QuoteAsset); q != "" && q != "USD" && !IsStablecoin(q) {
+	if q := NormalizeAsset(t.QuoteAsset); q != "" && q != quoteUSD && !IsStablecoin(q) {
 		currency = brokerage.Currency{Code: q}
 		needsReview = true
 		description = "Quoted in " + q + "; no USD conversion applied"
@@ -267,10 +271,10 @@ func unvaluedPosition(slug, displayName, asset string, qty float64) brokerage.Po
 			Name:        asset,
 			Type:        brokerage.SymbolType{Code: "CRYPTO", IsSupported: true, Description: "Cryptocurrency"},
 			Exchange:    brokerage.Exchange{Code: strings.ToUpper(slug), Name: displayName},
-			Currency:    brokerage.Currency{Code: "USD"},
+			Currency:    brokerage.Currency{Code: quoteUSD},
 		},
 		Units:    qty,
-		Currency: brokerage.Currency{Code: "USD"},
+		Currency: brokerage.Currency{Code: quoteUSD},
 	}
 }
 
@@ -279,13 +283,13 @@ func unvaluedPosition(slug, displayName, asset string, qty float64) brokerage.Po
 // separator-less symbols fall back to matching a known quote suffix, which
 // only covers listed quote assets — anything else yields ("", "") and the
 // caller must skip the trade.
-func splitPair(pair string) (string, string) {
+func splitPair(pair string) (base, quote string) {
 	pair = strings.ToUpper(strings.TrimSpace(pair))
 	if parts := strings.Split(pair, "-"); len(parts) == 2 && parts[0] != "" && parts[1] != "" {
 		return parts[0], parts[1]
 	}
 	concatenated := strings.ReplaceAll(pair, "-", "")
-	for _, quote := range []string{"USD₮0", "USDT", "USDC", "BUSD", "USDS", "USD", "BTC", "ETH", "BNB", "SOL"} {
+	for _, quote := range []string{"USD₮0", "USDT", "USDC", "BUSD", "USDS", quoteUSD, "BTC", "ETH", "BNB", "SOL"} {
 		if strings.HasSuffix(concatenated, quote) && len(concatenated) > len(quote) {
 			return strings.TrimSuffix(concatenated, quote), quote
 		}
@@ -293,6 +297,8 @@ func splitPair(pair string) (string, string) {
 	return "", ""
 }
 
+// NormalizeAsset canonicalizes an asset symbol to upper case without
+// surrounding whitespace, mapping known Tether spellings to USDT.
 func NormalizeAsset(s string) string {
 	s = strings.ToUpper(strings.TrimSpace(s))
 	// Tether's stylized symbols (USD₮ on TON, USD₮0 LayerZero omnichain)
@@ -311,7 +317,7 @@ func NormalizeAsset(s string) string {
 // IsStablecoin returns true for the most common USD-pegged stablecoins.
 func IsStablecoin(s string) bool {
 	switch NormalizeAsset(s) {
-	case "USDT", "USDC", "DAI", "BUSD", "TUSD", "FRAX", "USD", "USDD", "PYUSD":
+	case "USDT", "USDC", "DAI", "BUSD", "TUSD", "FRAX", quoteUSD, "USDD", "PYUSD":
 		return true
 	}
 	return false
@@ -321,7 +327,7 @@ func IsStablecoin(s string) bool {
 // concatenated pair symbols such as "BTCUSDT" that carry no separator.
 var quoteSuffixes = []string{
 	"USDT", "USDC", "FDUSD", "USDS", "TUSD", "DAI", "FRAX",
-	"BUSD", "USDD", "PYUSD", "USD", "EUR", "GBP",
+	"BUSD", "USDD", "PYUSD", quoteUSD, "EUR", "GBP",
 	"BTC", "ETH", "BNB", "SOL",
 }
 
@@ -345,7 +351,7 @@ func tradeBaseAsset(symbol string) string {
 // chain so downstream consumers always see a USD-denominated amount:
 //
 //  1. Zero fee, or an unknown (empty) denomination, passes through untouched
-//     and keeps the previous assume-USD behaviour.
+//     and keeps the previous assume-USD behavior.
 //  2. USD and USD-pegged stablecoins pass through 1:1.
 //  3. A fee paid in the traded asset itself reuses the trade's own fill
 //     price, provided the trade carries a timestamp; without one the fee
@@ -353,32 +359,32 @@ func tradeBaseAsset(symbol string) string {
 //  4. Any other asset is priced via priceFn; when the hook is nil or the
 //     price is unavailable the fee normalises to 0.
 //
-// The returned asset is always "USD" once a value was derived, so the
+// The returned asset is always quoteUSD once a value was derived, so the
 // amount and its label stay consistent.
-func normalizeFee(t Trade, priceFn func(asset string, at time.Time) float64) (float64, string) {
+func normalizeFee(t Trade, priceFn func(asset string, at time.Time) float64) (feeUSD float64, feeCurrency string) {
 	if t.Fee == 0 {
 		if strings.TrimSpace(t.FeeAsset) == "" {
-			return 0, "USD"
+			return 0, quoteUSD
 		}
 		return 0, strings.ToUpper(strings.TrimSpace(t.FeeAsset))
 	}
 	feeAsset := strings.ToUpper(strings.TrimSpace(t.FeeAsset))
 	if feeAsset == "" {
-		return t.Fee, "USD"
+		return t.Fee, quoteUSD
 	}
 	if IsStablecoin(feeAsset) {
-		return t.Fee, "USD"
+		return t.Fee, quoteUSD
 	}
 	if base := tradeBaseAsset(t.Symbol); base != "" && feeAsset == base {
 		if t.Timestamp.IsZero() {
-			return 0, "USD"
+			return 0, quoteUSD
 		}
-		return t.Fee * t.Price, "USD"
+		return t.Fee * t.Price, quoteUSD
 	}
 	if priceFn != nil {
 		if p := priceFn(feeAsset, t.Timestamp); p > 0 {
-			return t.Fee * p, "USD"
+			return t.Fee * p, quoteUSD
 		}
 	}
-	return 0, "USD"
+	return 0, quoteUSD
 }

@@ -21,6 +21,8 @@ import (
 // fatally, and anything matched is normalized without invention (net
 // amounts especially are only set when explicitly present).
 
+// marketPage mirrors the myhistory render envelope, structured or rendered.
+
 var (
 	// rowSplit cuts rendered HTML into per-listing blocks. Both selectors
 	// are observational; if neither matches, the whole payload is treated
@@ -38,7 +40,10 @@ var (
 	tagRe        = regexp.MustCompile(`(?s)<[^>]*>`)
 )
 
-// marketPage mirrors the myhistory render envelope, structured or rendered.
+// marketBuyType tags purchases made by the tracked account (cost basis),
+// as opposed to sales, listings and other evidence rows.
+const marketBuyType = "buy"
+
 type marketPage struct {
 	Success     bool                       `json:"success"`
 	TotalCount  int                        `json:"total_count"`
@@ -165,7 +170,7 @@ func purchaseToTx(p marketPurchase, mySteamID string, names map[string]string) (
 	tx.Currency = code
 	tx.Timestamp = time.Unix(p.TimeSold, 0).UTC()
 	if p.SteamIDBuyer != "" && p.SteamIDBuyer == mySteamID {
-		tx.Type = "buy"
+		tx.Type = marketBuyType
 		tx.ExternalID = "market:buy:" + p.PurchaseID
 		tx.Gross = minorToMajor(p.PaidAmount, decimals)
 	} else {
@@ -362,7 +367,7 @@ func classifyMarketRow(text string) string {
 	case strings.Contains(lower, "list"):
 		return "listing"
 	case strings.Contains(lower, "purchas") || strings.Contains(lower, "bought") || strings.HasPrefix(strings.TrimSpace(text), "-"):
-		return "buy"
+		return marketBuyType
 	case strings.Contains(lower, "sold") || strings.HasPrefix(strings.TrimSpace(text), "+"):
 		return "sell"
 	default:
@@ -420,7 +425,7 @@ func parseMarketBlock(block string) (domainsteam.MarketTransaction, bool) {
 	// one are useless and skipped.
 	sym, amount, ok := parseMoney(text)
 	if !ok {
-		if tx.Type == "buy" || tx.Type == "sell" {
+		if tx.Type == marketBuyType || tx.Type == "sell" {
 			return tx, false
 		}
 	} else {
@@ -524,14 +529,14 @@ type marketResume struct {
 // names resolves classid_instanceid (from inventory-history descriptions)
 // because purchase rows carry identity but no market names; the response
 // assets map fills identities history never described.
-func (c *Client) fetchMarketHistory(ctx context.Context, mySteamID string, names map[string]string, startOffset int) ([]domainsteam.MarketTransaction, bool, int, error) {
+func (c *Client) fetchMarketHistory(ctx context.Context, mySteamID string, names map[string]string, startOffset int) (txs []domainsteam.MarketTransaction, complete bool, next int, err error) {
 	if startOffset < 0 {
 		startOffset = 0
 	}
 	var all []domainsteam.MarketTransaction
 	seen := map[string]bool{}
 	total := -1
-	next := -1
+	next = -1
 	for page := 0; page < c.cfg.MaxPages; page++ {
 		start := startOffset + page*marketPageSize
 		if total >= 0 && start >= total {

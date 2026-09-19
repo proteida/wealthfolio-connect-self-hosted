@@ -75,7 +75,7 @@ func (h *SteamPriceHandler) GetCurrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(steamCurrentPriceDTO{
+	_ = json.NewEncoder(w).Encode(steamCurrentPriceDTO{ //nolint:errcheck // headers already sent; a client disconnect mid-body has no recovery path.
 		MarketHashName: q.MarketHashName, Price: q.Price, PriceType: q.PriceType, Currency: q.Currency,
 		Timestamp: q.Timestamp, TimestampUnix: q.Timestamp.Unix(), Date: q.Timestamp.Format("2006-01-02"),
 	})
@@ -135,7 +135,7 @@ func (h *SteamPriceHandler) GetHistory(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
+	_ = json.NewEncoder(w).Encode(out) //nolint:errcheck // headers already sent; a client disconnect mid-body has no recovery path.
 }
 
 // parseTimeBound accepts RFC3339, unix seconds (%s) or YYYY-MM-DD

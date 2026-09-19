@@ -1,4 +1,6 @@
-// Steam price-currency purge: drop history rows of unknown denomination.
+// Package persistence implements the PostgreSQL repositories and
+// data migrations backing the sync engine. Steam price-currency purge
+// below: drop history rows of unknown denomination.
 //
 // Background: SyncPriceHistory used to request /market/pricehistory/
 // without a currency parameter, so Steam answered in the session wallet

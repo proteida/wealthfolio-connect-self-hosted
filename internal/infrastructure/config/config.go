@@ -321,8 +321,8 @@ func LoadFrom(get Loader) (*Config, error) {
 	// DeFi wallets (consumed by the OKX Web3 integration).
 	if raw, ok := get("DEFI_WALLETS"); ok && strings.TrimSpace(raw) != "" {
 		var wallets []DefiWallet
-		if err := json.Unmarshal([]byte(raw), &wallets); err != nil {
-			return nil, fmt.Errorf("config: DEFI_WALLETS is not valid JSON: %w", err)
+		if derr := json.Unmarshal([]byte(raw), &wallets); derr != nil {
+			return nil, fmt.Errorf("config: DEFI_WALLETS is not valid JSON: %w", derr)
 		}
 		cfg.DefiWallets = wallets
 	}

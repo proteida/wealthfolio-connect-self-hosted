@@ -85,7 +85,7 @@ var _ = Describe("Review hardening", func() {
 			{AssetID: "a1", ClassID: "1", InstanceID: "0", Amount: 1, MarketHashName: "AK"},
 			{AssetID: "a2", ClassID: "1", InstanceID: "0", Amount: 1, MarketHashName: "AK"},
 		}
-		resolved, _ := Resolve(owned, nil, []historyEvent{ev}, market, nil, now)
+		resolved, _ := resolve(owned, nil, []historyEvent{ev}, market, nil, now)
 		Expect(resolved).To(HaveLen(2))
 		high := 0
 		for _, r := range resolved {
@@ -175,9 +175,6 @@ type stubCurrentCache struct {
 	m map[string]float64
 }
 
-func (s *stubCurrentCache) key(asset, currency string) string {
-	return appprices.CurrentKey(asset, currency)
-}
 func (s *stubCurrentCache) Get(_ context.Context, key string) (float64, bool, error) {
 	if s.m == nil {
 		return 0, false, nil
@@ -378,7 +375,7 @@ var _ = Describe("Review follow-ups", func() {
 			ExternalID: "e1", Timestamp: at, Kind: EventMarketList,
 			MarketHashName: "AK", AssetID: "new", ClassID: "1",
 		}}
-		resolved, unmatched := Resolve(
+		resolved, unmatched := resolve(
 			[]InventoryItem{{AssetID: "new", ClassID: "1", InstanceID: "0", Amount: 1, MarketHashName: "AK"}},
 			map[string]bool{}, evs, nil, nil, at)
 		Expect(resolved[0].MatchConfidence).To(Equal(domainsteam.MatchUnresolved))
@@ -392,9 +389,9 @@ var _ = Describe("Review follow-ups", func() {
 				ClassID: "1", InstanceID: "0", MarketHashName: "AK", Quantity: 1}
 		}
 		it := InventoryItem{AssetID: "x", ClassID: "1", InstanceID: "0", Amount: 1, MarketHashName: "AK"}
-		stale, _ := Resolve([]InventoryItem{it}, nil, []historyEvent{mk("old", now.Add(-100*time.Hour))}, nil, nil, now)
+		stale, _ := resolve([]InventoryItem{it}, nil, []historyEvent{mk("old", now.Add(-100*time.Hour))}, nil, nil, now)
 		Expect(stale[0].MatchConfidence).To(Equal(domainsteam.MatchUnresolved))
-		fresh, _ := Resolve([]InventoryItem{it}, nil, []historyEvent{mk("new", now.Add(-time.Hour))}, nil, nil, now)
+		fresh, _ := resolve([]InventoryItem{it}, nil, []historyEvent{mk("new", now.Add(-time.Hour))}, nil, nil, now)
 		Expect(fresh[0].MatchConfidence).To(Equal(domainsteam.MatchMedium))
 	})
 

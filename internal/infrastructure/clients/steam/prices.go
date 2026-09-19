@@ -172,7 +172,7 @@ func (c *Client) cacheAsset(asset string) string {
 // ok=false with err=nil means Steam has no usable price for the item.
 // err!=nil means the fetch failed transiently (throttle, 5xx, network)
 // and callers must not treat it as "no price".
-func (c *Client) CurrentPrice(ctx context.Context, marketHashName string) (float64, string, time.Time, bool, error) {
+func (c *Client) CurrentPrice(ctx context.Context, marketHashName string) (float64, string, time.Time, bool, error) { //nolint:gocritic,unnamedResult // price tuple (value, kind, observed, ok, err) is positional across the Steam pricing paths; names would collide with the err locals in every branch.
 	asset, curr := priceKey(marketHashName, c.cfg.Currency)
 	if c.priceHistory != nil && marketHashName != "" {
 		if p, err := c.priceHistory.Get(ctx, asset, curr, time.Now().UTC()); err == nil {
@@ -205,10 +205,14 @@ func (c *Client) CurrentPrice(ctx context.Context, marketHashName string) (float
 			return
 		}
 		now := time.Now().UTC()
-		_ = c.priceHistory.Upsert(ctx, []repository.HistoricalPrice{{
+		if err := c.priceHistory.Upsert(ctx, []repository.HistoricalPrice{{
 			Asset: asset, Timestamp: observed, Currency: curr,
 			Price: v, Source: priceSourceQuote, UpdatedAt: now,
-		}})
+		}}); err != nil {
+			// Best-effort quote cache: a failed write only means the
+			// next lookup refetches instead of serving this row.
+			c.log.Debug().Err(err).Str("name", marketHashName).Msg("steam quote cache store failed")
+		}
 	}
 	if c.prices == nil {
 		v, err := fetch(ctx)

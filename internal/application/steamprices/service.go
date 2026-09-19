@@ -7,6 +7,7 @@ package steamprices
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -149,5 +150,5 @@ func (s *Service) GetHistory(ctx context.Context, name string, from, to time.Tim
 }
 
 func isNotFound(err error) bool {
-	return err != nil && (err == repository.ErrNotFound || strings.Contains(err.Error(), "not found"))
+	return err != nil && (errors.Is(err, repository.ErrNotFound) || strings.Contains(err.Error(), "not found"))
 }

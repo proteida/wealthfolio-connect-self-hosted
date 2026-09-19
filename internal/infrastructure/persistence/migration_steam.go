@@ -1,4 +1,6 @@
-// Steam account-scoped uniqueness migration: fold the SteamID into every
+// Package persistence implements the PostgreSQL repositories and
+// data migrations backing the sync engine. Steam account-scoped
+// uniqueness migration below: fold the SteamID into every
 // account-owned unique index.
 //
 // Background: the account-owned Steam tables constrained only the

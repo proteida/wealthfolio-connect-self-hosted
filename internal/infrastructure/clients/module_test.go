@@ -102,7 +102,7 @@ var _ = Describe("Configured crypto registration", func() {
 		cfg.Crypto.BitgetPassphrase = ""
 		cfg.Crypto.HyperliquidWallet = ""
 		out := clients.NewCryptoClients(cfg, zerolog.Nop(), nil, nil, nil, nil, nil)
-		ids := []string{}
+		ids := make([]string, 0, len(out.Clients))
 		for _, c := range out.Clients {
 			ids = append(ids, c.ID())
 		}
