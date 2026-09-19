@@ -329,8 +329,10 @@ account-scoped history endpoint and committed one page at a time. The initial
 pass starts at `SNAPTRADE_HISTORY_START_DATE`; a durable offset resumes a
 partially completed pass. Later passes refetch the configured overlap and use
 upserts. SnapTrade activity ID is the primary identity, while a deterministic
-per-account SHA-256 fingerprint detects the rare case where SnapTrade
-reprocesses a record under a new ID. Historical rows are never deleted merely
+per-account SHA-256 fingerprint catches the rare case where SnapTrade
+reprocesses a record under a new ID: colliding identities are kept as
+separate rows flagged for review, never silently merged or dropped.
+Historical rows are never deleted merely
 because a later response omits them.
 
 The importer can promise only all activities that **SnapTrade makes available

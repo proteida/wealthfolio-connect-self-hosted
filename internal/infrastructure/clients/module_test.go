@@ -80,6 +80,18 @@ var _ = Describe("Client constructors", func() {
 	It("Module is non-nil", func() {
 		Expect(clients.Module).NotTo(BeNil())
 	})
+	It("omits direct brokers unless explicitly enabled", func() {
+		Expect(clients.NewDirectBrokers(&config.Config{}, zerolog.Nop()).Clients).To(BeEmpty())
+		Expect(clients.NewDirectBrokers(nil, zerolog.Nop()).Clients).To(BeEmpty())
+	})
+	It("registers enabled direct brokers", func() {
+		out := clients.NewDirectBrokers(cfg, zerolog.Nop())
+		ids := make([]string, 0, len(out.Clients))
+		for _, client := range out.Clients {
+			ids = append(ids, client.ID())
+		}
+		Expect(ids).To(ConsistOf("futu", "ibkr"))
+	})
 	It("omits every unconfigured crypto integration", func() {
 		out := clients.NewCryptoClients(&config.Config{}, zerolog.Nop(), nil, nil, nil, nil, nil)
 		Expect(out.Clients).To(BeEmpty())

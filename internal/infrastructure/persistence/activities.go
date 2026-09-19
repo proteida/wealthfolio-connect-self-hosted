@@ -106,9 +106,32 @@ func activityConflictColumns() []string {
 	}
 }
 
+// applyFingerprintIdentity reconciles one batch item against the fingerprint
+// identities observed so far (committed rows first, then earlier batch items).
+// A fingerprint match on the item's own identity is a plain idempotent
+// re-sync. A match on a different identity is ambiguous: the upstream may
+// have reprocessed the record under a new ID, or these may be genuinely
+// identical twin records (same economics, distinct IDs). Both rows are kept —
+// drops are never silent — and the newcomer is flagged for human review; the
+// first identity wins the fingerprint so every twin resolves consistently.
+func applyFingerprintIdentity(item *brokerage.Activity, known map[string]string) {
+	if item.SourceFingerprint == "" {
+		return
+	}
+	if prior, ok := known[item.SourceFingerprint]; ok {
+		if prior != item.SourceRecordID {
+			item.NeedsReview = true
+		}
+		return
+	}
+	known[item.SourceFingerprint] = item.SourceRecordID
+}
+
 // UpsertBatch deduplicates by (account_id, source_record_id). The conflict
 // target maps to the activities_account_source_uk unique index defined on
-// ActivityPO.
+// ActivityPO. Items carrying a source fingerprint are additionally reconciled
+// by economics (see applyFingerprintIdentity): colliding identities are kept
+// as separate rows flagged for review, never silently dropped.
 func (r *activityRepo) UpsertBatch(ctx context.Context, accountID string, items []brokerage.Activity) error {
 	if len(items) == 0 {
 		return nil
@@ -141,11 +164,7 @@ func (r *activityRepo) UpsertBatch(ctx context.Context, accountID string, items 
 	bySourceRecord := make(map[string]ActivityPO, len(items))
 	order := make([]string, 0, len(items))
 	for _, it := range items {
-		if prior, ok := identityByFingerprint[it.SourceFingerprint]; ok && it.SourceFingerprint != "" {
-			it.SourceRecordID = prior
-		} else if it.SourceFingerprint != "" {
-			identityByFingerprint[it.SourceFingerprint] = it.SourceRecordID
-		}
+		applyFingerprintIdentity(&it, identityByFingerprint)
 		if _, ok := bySourceRecord[it.SourceRecordID]; !ok {
 			order = append(order, it.SourceRecordID)
 		}
