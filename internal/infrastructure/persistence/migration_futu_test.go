@@ -18,9 +18,9 @@ func TestFutuLegIDPattern(t *testing.T) {
 }
 
 func TestFutuSlugPriority(t *testing.T) {
-	if !(futuSlugPriority("hk") < futuSlugPriority("us") &&
-		futuSlugPriority("us") < futuSlugPriority("cn") &&
-		futuSlugPriority("cn") < futuSlugPriority("sg")) {
+	if futuSlugPriority("hk") >= futuSlugPriority("us") ||
+		futuSlugPriority("us") >= futuSlugPriority("cn") ||
+		futuSlugPriority("cn") >= futuSlugPriority("sg") {
 		t.Fatal("market priority order broken")
 	}
 	if futuSlugPriority("xx") != 99 {
@@ -46,10 +46,10 @@ func TestPlanFutuActivityMoves(t *testing.T) {
 	}
 	// f1 collapses to the primary leg's copy; f2 moves (only copy);
 	// f3 already imported under the new scheme, old copy drops.
-	if !(has(move, "h1") && has(move, "u2") && len(move) == 2) {
+	if !has(move, "h1") || !has(move, "u2") || len(move) != 2 {
 		t.Fatalf("move = %v", move)
 	}
-	if !(has(drop, "u1") && has(drop, "h3") && len(drop) == 2) {
+	if !has(drop, "u1") || !has(drop, "h3") || len(drop) != 2 {
 		t.Fatalf("drop = %v", drop)
 	}
 }

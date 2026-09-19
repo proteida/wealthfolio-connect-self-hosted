@@ -14,6 +14,36 @@ import (
 
 var activityKeyCols = []string{"id", "account_id", "source_record_id"}
 
+// steamIndexStmts pins the account-scoped uniqueness migration, which
+// runs first inside MigrateData.
+var steamIndexStmts = []string{
+	`DROP INDEX IF EXISTS steam_events_uk`,
+	`DROP INDEX IF EXISTS steam_market_txs_uk`,
+	`DROP INDEX IF EXISTS steam_trades_uk`,
+	`DROP INDEX IF EXISTS steam_lots_uk`,
+	`DROP INDEX IF EXISTS steam_acquisitions_uk`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS steam_events_steam_uk ON steam_events (steam_id, external_id)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS steam_market_txs_steam_uk ON steam_market_transactions (steam_id, external_id)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS steam_trades_steam_uk ON steam_trades (steam_id, trade_id)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS steam_lots_steam_uk ON steam_acquisition_lots (steam_id, id)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS steam_acquisitions_steam_uk ON steam_asset_acquisitions (steam_id, assetid)`,
+}
+
+// expectSteamPricePurge stages the legacy currency purge, which runs
+// inside MigrateData after the index migration.
+func expectSteamPricePurge(m sqlmock.Sqlmock) {
+	m.ExpectExec(rx(`DELETE FROM "historical_prices"`)).WillReturnResult(sqlmock.NewResult(0, 0))
+}
+
+// expectSteamAccountIndexes stages the Steam uniqueness migration.
+func expectSteamAccountIndexes(m sqlmock.Sqlmock) {
+	m.ExpectBegin()
+	for _, stmt := range steamIndexStmts {
+		m.ExpectExec(rx(stmt)).WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+	m.ExpectCommit()
+}
+
 var _ = Describe("MigrateData futu universal accounts", func() {
 	var (
 		ctx  context.Context
@@ -34,6 +64,8 @@ var _ = Describe("MigrateData futu universal accounts", func() {
 		db, m, _, err := newMockDB()
 		Expect(err).NotTo(HaveOccurred())
 		mock = m
+		expectSteamAccountIndexes(mock)
+		expectSteamPricePurge(mock)
 		mock.ExpectQuery(rx(`FROM "accounts"`)).
 			WillReturnRows(sqlmock.NewRows(accountCols))
 		Expect(persistence.Migrator{}.MigrateData(ctx, db)).To(Succeed())
@@ -44,6 +76,8 @@ var _ = Describe("MigrateData futu universal accounts", func() {
 		db, m, _, err := newMockDB()
 		Expect(err).NotTo(HaveOccurred())
 		mock = m
+		expectSteamAccountIndexes(mock)
+		expectSteamPricePurge(mock)
 
 		hkRow := accountRow("futu-1-hk", now)
 		usRow := accountRow("futu-1-us", now)
@@ -82,6 +116,8 @@ var _ = Describe("MigrateData futu universal accounts", func() {
 		db, m, _, err := newMockDB()
 		Expect(err).NotTo(HaveOccurred())
 		mock = m
+		expectSteamAccountIndexes(mock)
+		expectSteamPricePurge(mock)
 
 		hkRow := accountRow("futu-1-hk", now)
 		usRow := accountRow("futu-1-us", now)
@@ -139,5 +175,34 @@ var _ = Describe("MigrateData futu universal accounts", func() {
 
 		Expect(persistence.Migrator{}.MigrateData(ctx, db)).To(Succeed())
 		Expect(mock.ExpectationsWereMet()).To(Succeed())
+	})
+})
+
+var _ = Describe("MigrateData steam account indexes", func() {
+	It("drops retired single-column indexes and creates composites", func() {
+		db, m, _, err := newMockDB()
+		Expect(err).NotTo(HaveOccurred())
+		expectSteamAccountIndexes(m)
+		expectSteamPricePurge(m)
+		// No retired Futu legs: the discovery query returns nothing.
+		m.ExpectQuery(rx(`FROM "accounts"`)).
+			WillReturnRows(sqlmock.NewRows(accountCols))
+		Expect(persistence.Migrator{}.MigrateData(context.Background(), db)).To(Succeed())
+		Expect(m.ExpectationsWereMet()).To(Succeed())
+	})
+})
+
+var _ = Describe("MigrateData steam price currency", func() {
+	It("purges legacy unknown-denomination rows and keeps quotes", func() {
+		db, m, _, err := newMockDB()
+		Expect(err).NotTo(HaveOccurred())
+		expectSteamAccountIndexes(m)
+		m.ExpectExec(rx(`DELETE FROM "historical_prices"`)).
+			WillReturnResult(sqlmock.NewResult(0, 18209))
+		// No retired Futu legs: the discovery query returns nothing.
+		m.ExpectQuery(rx(`FROM "accounts"`)).
+			WillReturnRows(sqlmock.NewRows(accountCols))
+		Expect(persistence.Migrator{}.MigrateData(context.Background(), db)).To(Succeed())
+		Expect(m.ExpectationsWereMet()).To(Succeed())
 	})
 })

@@ -58,6 +58,15 @@ const (
 	maxRetryDelay     = 30 * time.Second
 )
 
+// Action operation names observed in TON traces. Centralized so parsers
+// and classifiers cannot drift apart on spelling.
+const (
+	opTonTransfer    = "ton_transfer"
+	opJettonTransfer = "jetton_transfer"
+	opJettonBurn     = "jetton_burn"
+	nativeTONSymbol  = "TON"
+)
+
 // errHistoryTruncated reports that pagination hit the safety page cap, so the
 // returned history is a prefix and transaction sync must stay incomplete.
 var errHistoryTruncated = fmt.Errorf("ton: history pagination hit the page cap")
@@ -214,7 +223,7 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 		return strings.TrimSpace(s) == ""
 	})
 	if len(wallets) == 0 {
-		// No wallets configured → do not surface an empty "TON"
+		// No wallets configured → do not surface an empty nativeTONSymbol
 		// connection in the desktop UI.
 		return domainsync.BrokerSnapshot{Activities: map[string][]brokerageActivity{}}, nil
 	}
@@ -253,7 +262,7 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 				jettonWallets[t.WalletAddr] = true
 			}
 		}
-		startedTail := c.tailCursor(p.forms[0])
+		startedTail := c.tailCursor(ctx, p.forms[0])
 		activities, outflows, allowFallback, txErr := c.walletHistory(ctx, p.forms, p.masters, c.valueOrPricer(), jettonWallets, tracked)
 		if txErr != nil {
 			c.log.Warn().Err(txErr).Str("address", p.data.Address).Msg("ton: transaction history incomplete")
@@ -288,6 +297,8 @@ func staleVaultIDs(data *TonWalletData) []string {
 		switch a.Type {
 		case brokerage.ActivityBuy, brokerage.ActivityDeposit, brokerage.ActivityTransferIn:
 			inbound[cexcommon.NormalizeAsset(a.Symbol.Symbol)] = true
+		default:
+			// Other activity types never mark inbound history.
 		}
 	}
 	if len(inbound) == 0 {
@@ -422,7 +433,7 @@ func pricerFor(c *Client) *pricer {
 
 // fetchBalances pulls the native state and Jetton balances with metadata.
 // History is fetched separately per wallet afterwards.
-func (c *Client) fetchBalances(ctx context.Context, address string) (TonWalletData, []string, map[string]tokenMeta, error) {
+func (c *Client) fetchBalances(ctx context.Context, address string) (TonWalletData, []string, map[string]tokenMeta, error) { //nolint:gocritic,unnamedResult // fetch quadruple (data, forms, masters, err) is positional across the TON client; names would collide with the err locals in every branch.
 	fail := func(err error) (TonWalletData, []string, map[string]tokenMeta, error) {
 		return TonWalletData{}, nil, nil, err
 	}
@@ -438,7 +449,7 @@ func (c *Client) fetchBalances(ctx context.Context, address string) (TonWalletDa
 	data := TonWalletData{Address: address, Canonical: state.Address, Friendly: friendly, Tokens: tokens}
 	if native := nanotonsToTON(state.Balance); native > 0 {
 		data.Tokens = append([]TonToken{{
-			Symbol:   "TON",
+			Symbol:   nativeTONSymbol,
 			Quantity: native,
 			Decimals: 9,
 		}}, data.Tokens...)
@@ -685,7 +696,7 @@ func (c *Client) walletTokens(ctx context.Context, owner string) ([]TonToken, ma
 // message trees, and classifies each trace. Any collection error aborts the
 // rest so partial history is never completed. Trace verification failures
 // degrade to interpreted legs and allow the valued fallback.
-func (c *Client) walletHistory(ctx context.Context, forms []string, masters map[string]tokenMeta, value valueUSD, jettonWallets map[string]bool, tracked map[string]bool) ([]brokerageActivity, map[string]VaultSpend, bool, error) {
+func (c *Client) walletHistory(ctx context.Context, forms []string, masters map[string]tokenMeta, value valueUSD, jettonWallets map[string]bool, tracked map[string]bool) ([]brokerageActivity, map[string]VaultSpend, bool, error) { //nolint:gocritic,unnamedResult // history tuple (activities, outflows, partial, err) is positional across the TON client.
 	primary := forms[0]
 	actions, actionMeta, histTruncated, histErr := c.walletActionHistory(ctx, primary)
 	if histErr != nil && len(actions) == 0 {
@@ -725,12 +736,12 @@ func (c *Client) walletHistory(ctx context.Context, forms []string, masters map[
 	}
 	// Burns and vault mints reference masters the listings never touch
 	// (receipts credit jetton wallets, not the wallet itself).
-	if extra, err := c.resolveTraceAssets(ctx, trees, masters, actionMeta); err != nil {
-		return nil, nil, false, err
-	} else {
-		for addr, m := range extra {
-			masters[addr] = m
-		}
+	traceExtra, traceErr := c.resolveTraceAssets(ctx, trees, masters, actionMeta)
+	if traceErr != nil {
+		return nil, nil, false, traceErr
+	}
+	for addr, m := range traceExtra {
+		masters[addr] = m
 	}
 	var out []brokerageActivity
 	seen := make(map[string]bool)
@@ -768,7 +779,7 @@ func (c *Client) walletHistory(ctx context.Context, forms []string, masters map[
 // tailCursor returns the committed backfill offset (in actions) for a
 // wallet, seeding from durable state on first use after a restart.
 // Uncommitted tentative progress is dropped so failed writes replay.
-func (c *Client) tailCursor(account string) int {
+func (c *Client) tailCursor(ctx context.Context, account string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if offset, ok := c.tailOffset[account]; ok && c.tailCommitted[account] {
@@ -776,7 +787,7 @@ func (c *Client) tailCursor(account string) int {
 	}
 	offset := 0
 	if c.cursors != nil {
-		if cur, err := c.cursors.Get(context.Background(), tailScopePrefix+account); err == nil {
+		if cur, err := c.cursors.Get(ctx, tailScopePrefix+account); err == nil {
 			offset, _ = strconv.Atoi(cur.Position) //nolint:errcheck // corrupt positions restart the backfill
 		}
 	}
@@ -816,7 +827,7 @@ func (c *Client) setTailCursor(account string, offset int) {
 // actions (deduped by ActionID across offset shifts), whether more actions
 // remain beyond the budget, and any collection error. Callers drop the
 // boundary-oldest group while truncated or errored.
-func (c *Client) walletActionHistory(ctx context.Context, account string) ([]tonAction, map[string]addressMeta, bool, error) {
+func (c *Client) walletActionHistory(ctx context.Context, account string) ([]tonAction, map[string]addressMeta, bool, error) { //nolint:gocritic,unnamedResult // history tuple (actions, meta, truncated, err) is positional across the TON client.
 	newest, newestMeta, newestTruncated, err := c.fetchActionWindow(ctx, account, 0, newestWindowPages)
 	if err != nil {
 		return newest, newestMeta, false, err
@@ -827,7 +838,7 @@ func (c *Client) walletActionHistory(ctx context.Context, account string) ([]ton
 		c.setTailCursor(account, 0)
 		return newest, meta, false, nil
 	}
-	startPage := c.tailCursor(account) / actionPageLimit
+	startPage := c.tailCursor(ctx, account) / actionPageLimit
 	if startPage < newestWindowPages {
 		startPage = newestWindowPages
 	}
@@ -871,13 +882,13 @@ func needsTraceVerification(group []tonAction, forms []string) bool {
 	}
 	a := group[0]
 	switch a.Type {
-	case "ton_transfer":
+	case opTonTransfer:
 		var d tonTransferDetails
 		if err := json.Unmarshal(a.Details, &d); err != nil {
 			return false
 		}
 		return slices.Contains(forms, d.Source) && !slices.Contains(forms, d.Destination)
-	case "jetton_transfer":
+	case opJettonTransfer:
 		var d jettonTransferDetails
 		if err := json.Unmarshal(a.Details, &d); err != nil {
 			return false
@@ -893,7 +904,7 @@ func needsTraceVerification(group []tonAction, forms []string) bool {
 // interpreted legs silently; fetch errors allow the valued fallback.
 // Vault-intake markers are recorded for outflow actions whose subtree provably
 // enters a protocol.
-func (c *Client) verifyTraces(ctx context.Context, wallet string, forms []string, groups [][]tonAction) (map[string]*traceEnvelope, map[string]vaultMarker, bool) {
+func (c *Client) verifyTraces(ctx context.Context, wallet string, forms []string, groups [][]tonAction) (map[string]*traceEnvelope, map[string]vaultMarker, bool) { //nolint:gocritic,unnamedResult // verification triple (trees, vaults, complete) is positional across the TON client.
 	trees := make(map[string]*traceEnvelope)
 	vaults := make(map[string]vaultMarker)
 	failed := false
@@ -955,13 +966,13 @@ func (c *Client) verifyTraces(ctx context.Context, wallet string, forms []string
 // isWalletOutflow reports whether a transfer action spends from the wallet.
 func isWalletOutflow(a tonAction, forms []string) bool {
 	switch a.Type {
-	case "ton_transfer":
+	case opTonTransfer:
 		var d tonTransferDetails
 		if err := json.Unmarshal(a.Details, &d); err != nil {
 			return false
 		}
 		return slices.Contains(forms, d.Source) && !slices.Contains(forms, d.Destination)
-	case "jetton_transfer":
+	case opJettonTransfer:
 		var d jettonTransferDetails
 		if err := json.Unmarshal(a.Details, &d); err != nil {
 			return false
@@ -992,7 +1003,7 @@ func (c *Client) resolveActionAssets(ctx context.Context, actions []tonAction, k
 			continue
 		}
 		switch a.Type {
-		case "jetton_transfer":
+		case opJettonTransfer:
 			var d jettonTransferDetails
 			if err := json.Unmarshal(a.Details, &d); err == nil {
 				consider(d.Asset)
@@ -1008,7 +1019,7 @@ func (c *Client) resolveActionAssets(ctx context.Context, actions []tonAction, k
 			if err := json.Unmarshal(a.Details, &d); err == nil {
 				consider(d.Asset)
 			}
-		case "jetton_burn":
+		case opJettonBurn:
 			var d jettonBurnDetails
 			if err := json.Unmarshal(a.Details, &d); err == nil {
 				consider(d.Asset)
@@ -1051,7 +1062,7 @@ func (c *Client) resolveTraceAssets(ctx context.Context, trees map[string]*trace
 	}
 	for _, tree := range trees {
 		for _, a := range tree.Actions {
-			if !a.Success || a.Type != "jetton_burn" {
+			if !a.Success || a.Type != opJettonBurn {
 				continue
 			}
 			var d jettonBurnDetails
@@ -1084,7 +1095,7 @@ func (c *Client) resolveTraceAssets(ctx context.Context, trees map[string]*trace
 
 // isNativeAsset reports TON-denominated swap legs, which carry no master.
 func isNativeAsset(asset string) bool {
-	return strings.EqualFold(strings.TrimSpace(asset), "TON")
+	return strings.EqualFold(strings.TrimSpace(asset), nativeTONSymbol)
 }
 
 // get performs one authenticated GET with retry on rate limits, indexer
@@ -1135,7 +1146,7 @@ func (c *Client) getOnce(ctx context.Context, path string, query url.Values, int
 	if len(query) > 0 {
 		requestPath += "?" + query.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+requestPath, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+requestPath, http.NoBody)
 	if err != nil {
 		return false, 0, err
 	}

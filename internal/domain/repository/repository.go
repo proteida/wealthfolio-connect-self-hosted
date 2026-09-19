@@ -97,6 +97,135 @@ type TokenRepository interface {
 	Insert(ctx context.Context, t TokenMetadata) error
 }
 
+// SteamInventorySnapshot is one persisted inventory state. Complete is
+// false for partial fetches, which must never replace the last complete
+// snapshot or delete previously known history.
+type SteamInventorySnapshot struct {
+	ID       string
+	SteamID  string
+	TakenAt  time.Time
+	Complete bool
+	Assets   []SteamAssetRow
+}
+
+// SteamAssetRow is one asset line inside a snapshot.
+type SteamAssetRow struct {
+	AssetID        string
+	ClassID        string
+	InstanceID     string
+	MarketHashName string
+	Amount         int
+}
+
+// SteamAssetRepository persists CS2 inventory state, acquisition lots and
+// reconciliation outcomes. Every import is idempotent: reruns upsert the
+// same rows and never duplicate them.
+type SteamAssetRepository interface {
+	// LatestSnapshot returns the newest complete snapshot, or ErrNotFound.
+	LatestSnapshot(ctx context.Context, steamID string) (SteamInventorySnapshot, error)
+	// SaveSnapshot stores a snapshot with its asset rows atomically.
+	SaveSnapshot(ctx context.Context, snap SteamInventorySnapshot) error
+	// RecordEvents stores normalized inventory-history rows, skipping known
+	// external IDs. Unmatched rows stay for later reconciliation.
+	RecordEvents(ctx context.Context, steamID string, events []SteamEventRow) error
+	// UnmatchedEvents returns stored events not yet bound to an asset.
+	UnmatchedEvents(ctx context.Context, steamID string) ([]SteamEventRow, error)
+	// MarkEventsMatched flags events consumed by a reconciliation.
+	MarkEventsMatched(ctx context.Context, steamID string, externalIDs []string) error
+	// SaveMarketTransactions stores normalized market rows, skipping known IDs.
+	SaveMarketTransactions(ctx context.Context, steamID string, txs []SteamMarketRow) error
+	// SaveTrades stores normalized trades, skipping known trade IDs.
+	SaveTrades(ctx context.Context, steamID string, trades []SteamTradeRow) error
+	// SaveLots replaces the whole lot set for the account: stale lots
+	// absent from the new set are cleared. Callers must only invoke it
+	// for complete snapshots.
+	SaveLots(ctx context.Context, steamID string, lots []SteamLotRow) error
+	// SaveAcquisitions upserts per-asset acquisition records with an
+	// upgrade-only rule: stored evidence is replaced solely by
+	// equal-or-stronger evidence, never downgraded.
+	SaveAcquisitions(ctx context.Context, steamID string, acquisitions []SteamAcquisitionRow) error
+	// CurrentAssets returns the latest known asset states for valuation.
+	CurrentAssets(ctx context.Context, steamID string) ([]SteamAssetState, error)
+	// AcquisitionsForAssets returns stored acquisition records for the
+	// given asset IDs, independently of any snapshot baseline, so assets
+	// first seen in a partial sync keep recoverable evidence.
+	AcquisitionsForAssets(ctx context.Context, steamID string, assetIDs []string) ([]SteamAcquisitionRow, error)
+}
+
+// SteamEventRow is one stored inventory-history event.
+type SteamEventRow struct {
+	ExternalID     string
+	Timestamp      time.Time
+	Kind           string
+	MarketHashName string
+	Quantity       int
+	AssetID        string
+	Matched        bool
+}
+
+// SteamMarketRow is one stored market transaction.
+type SteamMarketRow struct {
+	ExternalID     string
+	Type           string
+	Timestamp      time.Time
+	MarketHashName string
+	ClassID        string
+	InstanceID     string
+	Quantity       int
+	Gross          float64
+	Net            *float64
+	Currency       string
+}
+
+// SteamTradeRow is one stored trade with both asset sides as JSON.
+type SteamTradeRow struct {
+	TradeID      string
+	Timestamp    time.Time
+	OtherSteamID string
+	Status       string
+	GivenJSON    []byte
+	ReceivedJSON []byte
+}
+
+// SteamLotRow is one stored acquisition lot.
+type SteamLotRow struct {
+	ID             string
+	MarketHashName string
+	Quantity       int
+	AcquiredAt     time.Time
+	UnitCost       *float64
+	CostCurrency   string
+	Source         string
+	Reference      string
+}
+
+// SteamAcquisitionRow binds one assetid to its acquisition evidence.
+type SteamAcquisitionRow struct {
+	AssetID         string
+	MarketHashName  string
+	AcquiredAt      *time.Time
+	Type            string
+	Reference       string
+	CostBasis       *float64
+	CostCurrency    string
+	MatchMethod     string
+	MatchConfidence string
+}
+
+// SteamAssetState is the stored per-asset record served for valuation.
+type SteamAssetState struct {
+	SteamAssetRow
+	FirstSeenAt     time.Time
+	LastSeenAt      time.Time
+	AcquiredAt      *time.Time
+	Type            string
+	Reference       string
+	CostBasis       *float64
+	CostCurrency    string
+	MatchMethod     string
+	MatchConfidence string
+}
+
 // HistoricalPrice is one market quote stored without expiration: asset and
 // currency are upper-cased codes ("BTC", "USD"), Timestamp is the provider
 // quote time, Source names the provider ("tonapi", "coingecko", "binance"),

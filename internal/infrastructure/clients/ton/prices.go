@@ -34,13 +34,13 @@ const (
 // coinIDs maps upper-cased tickers to CoinGecko coin IDs for receipt-time
 // valuation (deposits) and TON legs. Stablecoins bypass the feed at $1.
 var coinIDs = map[string]string{
-	"TON":    "the-open-network",
-	"USDT":   "tether",
-	"USDC":   "usd-coin",
-	"TSTON":  "tonstakers",
-	"AAPLX":  "apple-xstock",
-	"WAAPLX": "wrapped-apple-xstock",
-	"SPYX":   "sp500-xstock",
+	nativeTONSymbol: "the-open-network",
+	"USDT":          "tether",
+	"USDC":          "usd-coin",
+	"TSTON":         "tonstakers",
+	"AAPLX":         "apple-xstock",
+	"WAAPLX":        "wrapped-apple-xstock",
+	"SPYX":          "sp500-xstock",
 }
 
 // valueUSD resolves USD values for swap legs and cost bases for single legs.
@@ -155,8 +155,8 @@ func (p *pricer) tokenValue(ctx context.Context, symbol, addr string, qty float6
 func (p *pricer) tonAPIPrice(ctx context.Context, symbol, addr string, at int64) (float64, bool) {
 	id := addr
 	switch upper := strings.ToUpper(symbol); {
-	case upper == "TON" || upper == "GRAM":
-		id = "TON"
+	case upper == nativeTONSymbol || upper == "GRAM":
+		id = nativeTONSymbol
 	case addr == "":
 		id = upper
 	}
@@ -190,7 +190,7 @@ func (p *pricer) chartPoints(ctx context.Context, id string) ([]pricePoint, erro
 	}
 	now := time.Now().Unix()
 	from := now - tonAPIHistoryDays*daySeconds
-	if stored, err := p.storedWindow(ctx, id, "tonapi", from, now); err == nil && len(stored) > 0 {
+	if stored, err := p.storedWindow(ctx, id, from, now); err == nil && len(stored) > 0 {
 		// The live endpoint serves newest-first and tonAPIPrice selects
 		// on that order; the store returns oldest-first, so reverse.
 		for i, j := 0, len(stored)-1; i < j; i, j = i+1, j-1 {
@@ -250,7 +250,7 @@ func (p *pricer) fetchChart(ctx context.Context, id string, from, to int64) ([]p
 // the token simply has no indexed history.
 func (p *pricer) chartOnce(ctx context.Context, q url.Values) (bool, time.Duration, []pricePoint, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		p.tonAPIBase+"/chart?"+q.Encode(), nil)
+		p.tonAPIBase+"/chart?"+q.Encode(), http.NoBody)
 	if err != nil {
 		return false, 0, nil, err
 	}
@@ -336,7 +336,7 @@ func (p *pricer) dayPoints(ctx context.Context, id string, at int64) ([]pricePoi
 	if ok {
 		return points, nil
 	}
-	if stored, err := p.storedWindow(ctx, id, "coingecko", day, day+daySeconds); err == nil && len(stored) > 0 {
+	if stored, err := p.storedWindow(ctx, id, day, day+daySeconds); err == nil && len(stored) > 0 {
 		p.mu.Lock()
 		p.geckoCache[key] = stored
 		p.mu.Unlock()
@@ -358,7 +358,7 @@ func (p *pricer) dayPoints(ctx context.Context, id string, at int64) ([]pricePoi
 
 // storedWindow reads a durable window for selection, or nil when the store
 // is unwired, unreadable or empty (callers fall through to a fetch).
-func (p *pricer) storedWindow(ctx context.Context, id, source string, from, to int64) ([]pricePoint, error) {
+func (p *pricer) storedWindow(ctx context.Context, id string, from, to int64) ([]pricePoint, error) {
 	if p.history == nil {
 		return nil, nil
 	}
@@ -392,7 +392,9 @@ func (p *pricer) rememberWindow(ctx context.Context, id, source string, points [
 			Currency: "USD", Price: point.price, Source: source,
 		})
 	}
-	_ = p.history.Upsert(ctx, rows)
+	// Best-effort durable write; the in-memory copy already serves this
+	// process, so a store failure only costs a future refetch.
+	_ = p.history.Upsert(ctx, rows) //nolint:errcheck // fail-open durable write; memory copy already serves this process.
 }
 
 // fetchRange pulls hourly quotes for [from, to] with retry on rate limits.
@@ -429,7 +431,7 @@ func (p *pricer) fetchRange(ctx context.Context, id string, from, to int64) ([]p
 // Retry-After delay and the parsed points.
 func (p *pricer) fetchOnce(ctx context.Context, id string, q url.Values) (bool, time.Duration, []pricePoint, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		p.geckoBase+"/coins/"+id+"/market_chart/range?"+q.Encode(), nil)
+		p.geckoBase+"/coins/"+id+"/market_chart/range?"+q.Encode(), http.NoBody)
 	if err != nil {
 		return false, 0, nil, err
 	}

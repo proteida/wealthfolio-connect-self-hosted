@@ -37,7 +37,7 @@ import (
 
 // futuLegIDPattern matches retired per-market account IDs, capturing the
 // real account ID and the market slug: futu-281000123-hk.
-var futuLegIDPattern = regexp.MustCompile(`^futu-([0-9]+)-([a-z][a-z0-9_]*)$`)
+var futuLegIDPattern = regexp.MustCompile(`^futu-(\d+)-([a-z][a-z0-9_]*)$`)
 
 // futuSlugPriority orders market legs for primary selection, mirroring the
 // market preference used at fetch time (HK first, then US, CN, SG, JP).
@@ -70,6 +70,12 @@ type futuLeg struct {
 
 // MigrateData runs row-level data migrations after AutoMigrate.
 func (Migrator) MigrateData(ctx context.Context, db *gorm.DB) error {
+	if err := migrateSteamAccountIndexes(ctx, db); err != nil {
+		return fmt.Errorf("steam account indexes: %w", err)
+	}
+	if err := migrateSteamPriceCurrency(ctx, db); err != nil {
+		return fmt.Errorf("steam price currency: %w", err)
+	}
 	if err := migrateFutuUniversalAccounts(ctx, db); err != nil {
 		return fmt.Errorf("futu universal accounts: %w", err)
 	}
@@ -154,7 +160,6 @@ func mergeFutuLegs(ctx context.Context, tx *gorm.DB, accID string, legs []futuLe
 
 	syncEnabled := true
 	for _, l := range legs {
-
 		syncEnabled = syncEnabled && l.account.SyncEnabled
 	}
 

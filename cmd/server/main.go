@@ -13,6 +13,7 @@ import (
 	appauth "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/auth"
 	appbrokerage "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/brokerage"
 	appprices "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/prices"
+	steamprices "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/steamprices"
 	appsync "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/sync"
 	infraauth "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/auth"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/cache"
@@ -35,6 +36,7 @@ func Modules() fx.Option {
 		appauth.Module,
 		appbrokerage.Module,
 		appprices.Module,
+		steamprices.Module,
 		appsync.Module,
 		cache.Module,
 		clients.Module,

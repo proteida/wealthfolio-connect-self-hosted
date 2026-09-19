@@ -149,6 +149,34 @@ var _ = Describe("sync.Service", func() {
 		// No Upsert/Replace/UpsertBatch/UpdateSyncStatus expected.
 	})
 
+	It("deletes retracted activities named by the snapshot", func() {
+		snap := sampleSnap()
+		snap.RetractedActivities = map[string][]string{"a": {"steam:200"}}
+		conns.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil)
+		accs.EXPECT().Get(gomock.Any(), "a").Return(brokerage.Account{}, repository.ErrNotFound)
+		accs.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil)
+		hlds.EXPECT().Replace(gomock.Any(), gomock.Any()).Return(nil)
+		accs.EXPECT().UpdateSyncStatus(gomock.Any(), "a", nil, gomock.Any()).Return(nil)
+		acts.EXPECT().UpsertBatch(gomock.Any(), "a", gomock.Any()).Return(nil)
+		acts.EXPECT().Delete(gomock.Any(), "a", []string{"steam:200"}).Return(nil)
+		s := build(&fakeClient{id: "x", snap: snap})
+		Expect(s.RunOnce(context.Background())).To(Succeed())
+	})
+
+	It("skips retractions when the holdings snapshot is partial", func() {
+		snap := sampleSnap()
+		snap.Holdings[0].Partial = true
+		snap.RetractedActivities = map[string][]string{"a": {"steam:200"}}
+		conns.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil)
+		accs.EXPECT().Get(gomock.Any(), "a").Return(brokerage.Account{}, repository.ErrNotFound)
+		accs.EXPECT().Upsert(gomock.Any(), gomock.Any()).Return(nil)
+		acts.EXPECT().UpsertBatch(gomock.Any(), "a", gomock.Any()).Return(nil)
+		s := build(&fakeClient{id: "x", snap: snap})
+		Expect(s.RunOnce(context.Background())).To(Succeed())
+		// No Delete expected: gomock fails on unexpected calls, so its
+		// absence is the assertion.
+	})
+
 	It("errors when every client fails and holds LastRun", func() {
 		s := build(&fakeClient{id: "broken", err: errors.New("boom")})
 		Expect(s.RunOnce(context.Background())).To(MatchError(ContainSubstring("all 1 brokers failed")))

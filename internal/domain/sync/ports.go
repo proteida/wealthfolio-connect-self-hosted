@@ -15,6 +15,13 @@ type BrokerSnapshot struct {
 	Accounts   []brokerage.Account
 	Holdings   []brokerage.Holdings
 	Activities map[string][]brokerage.Activity // keyed by Account ID
+	// RetractedActivities lists stale source_record_ids per account that
+	// the client filtered out of this snapshot (e.g. Steam dust below the
+	// value threshold). The sync engine deletes them so UpsertBatch-only
+	// accumulation cannot keep superseded rows visible forever. Empty
+	// means nothing to retract; clients that emit incremental history
+	// leave it nil so past rows are never garbage-collected.
+	RetractedActivities map[string][]string // keyed by Account ID
 }
 
 // BrokerClient is implemented by every concrete upstream integration

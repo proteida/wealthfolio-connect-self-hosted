@@ -52,7 +52,7 @@ func NewPriceHistoryRepository(db *gorm.DB) repository.PriceHistoryRepository {
 
 // normalizePrice trims codes to upper case and defaults an empty currency
 // to USD so equivalent lookups share one key.
-func normalizePrice(asset, currency string) (string, string) {
+func normalizePrice(asset, currency string) (normAsset, normCurrency string) {
 	asset = strings.ToUpper(strings.TrimSpace(asset))
 	currency = strings.ToUpper(strings.TrimSpace(currency))
 	if currency == "" {

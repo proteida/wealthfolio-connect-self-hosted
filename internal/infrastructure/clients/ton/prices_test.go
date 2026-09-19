@@ -19,17 +19,13 @@ func testPricer(srv *httptest.Server) *pricer {
 
 func rangeBody(points ...any) map[string]any {
 	rows := make([]any, 0, len(points))
-	for _, p := range points {
-		rows = append(rows, p)
-	}
+	rows = append(rows, points...)
 	return map[string]any{"prices": rows}
 }
 
 func chartBody(points ...any) map[string]any {
 	rows := make([]any, 0, len(points))
-	for _, p := range points {
-		rows = append(rows, p)
-	}
+	rows = append(rows, points...)
 	return map[string]any{"points": rows}
 }
 

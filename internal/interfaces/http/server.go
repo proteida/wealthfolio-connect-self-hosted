@@ -36,6 +36,7 @@ var Module = fx.Module("http",
 		AsAPIRoute(handlers.NewAccountHandler),
 		AsAPIRoute(handlers.NewActivityHandler),
 		AsAPIRoute(handlers.NewHoldingHandler),
+		AsPublicAPIRoute(handlers.NewSteamPriceHandler),
 	),
 	fx.Invoke(StartServer),
 )

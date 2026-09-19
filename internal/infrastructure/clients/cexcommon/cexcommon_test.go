@@ -274,7 +274,7 @@ var _ = Describe("Translate fee normalization", func() {
 		Expect(got[0].FeeAsset).To(Equal("USD"))
 	})
 
-	It("preserves the previous assume-USD behaviour for unknown denominations", func() {
+	It("preserves the previous assume-USD behavior for unknown denominations", func() {
 		got := tradeActs([]cexcommon.Trade{
 			{ID: "t1", Symbol: "BTC-USDT", Side: "buy", Price: 60000, Quantity: 0.1, Fee: 5, Timestamp: time.Now()},
 		}, nil)

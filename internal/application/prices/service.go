@@ -9,6 +9,7 @@ package prices
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -181,12 +182,14 @@ func (s *Service) GetCurrentWithTTL(ctx context.Context, asset, currency string,
 		return 0, err
 	}
 	if s.current != nil {
-		_ = s.current.Set(ctx, key, price, ttl)
+		// Best-effort write: a failed cache store only costs the next
+		// caller a refetch, so it never fails the read path.
+		_ = s.current.Set(ctx, key, price, ttl) //nolint:errcheck // fail-open cache write; the fresh value is still returned.
 	}
 	return price, nil
 }
 
-// GetBlob is the raw-bytes analogue of GetCurrent for providers whose
+// GetBlob is the raw-bytes analog of GetCurrent for providers whose
 // cacheable unit is a document rather than a number (e.g. Hyperliquid's
 // whole mark map). Hit returns the stored bytes; on a miss fetch runs and
 // its output is stored for ttl. Cache errors fail open to fetch.
@@ -204,7 +207,8 @@ func (s *Service) GetBlob(ctx context.Context, key string, ttl time.Duration, fe
 		return nil, err
 	}
 	if s.current != nil {
-		_ = s.current.SetRaw(ctx, key, raw, ttl)
+		// Best-effort write, same fail-open contract as GetCurrent.
+		_ = s.current.SetRaw(ctx, key, raw, ttl) //nolint:errcheck // fail-open cache write; the fresh bytes are still returned.
 	}
 	return raw, nil
 }
@@ -250,14 +254,14 @@ func (s *Service) FinalizeCandle(ctx context.Context, asset, currency string, da
 	asset = strings.ToUpper(strings.TrimSpace(asset))
 	currency = strings.ToUpper(strings.TrimSpace(currency))
 	key := candleKey(asset, currency, day)
-	var close float64
+	var closing float64
 	var source string
 	haveCandle := false
 	if s.current != nil {
 		if c, found, err := s.GetCandle(ctx, asset, currency, day); err != nil {
 			return fmt.Errorf("prices: candle read: %w", err)
 		} else if found {
-			close, source, haveCandle = c.Close, c.Source, true
+			closing, source, haveCandle = c.Close, c.Source, true
 		}
 		if err := s.current.Delete(ctx, key); err != nil {
 			return fmt.Errorf("prices: candle drop: %w", err)
@@ -268,10 +272,10 @@ func (s *Service) FinalizeCandle(ctx context.Context, asset, currency string, da
 	}
 	return s.history.Upsert(ctx, []repository.HistoricalPrice{{
 		Asset: asset, Timestamp: startOfDay(day), Currency: currency,
-		Price: close, Source: source, UpdatedAt: s.now().UTC(),
+		Price: closing, Source: source, UpdatedAt: s.now().UTC(),
 	}})
 }
 
 func isNotFound(err error) bool {
-	return err != nil && (err == repository.ErrNotFound || strings.Contains(err.Error(), "not found"))
+	return err != nil && (errors.Is(err, repository.ErrNotFound) || strings.Contains(err.Error(), "not found"))
 }

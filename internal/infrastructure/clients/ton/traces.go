@@ -83,7 +83,10 @@ func stringField(v any, key string) string {
 	case string:
 		return t
 	case map[string]any:
-		s, _ := t[key].(string)
+		s, ok := t[key].(string)
+		if !ok {
+			return ""
+		}
 		return s
 	default:
 		return ""
@@ -109,11 +112,11 @@ func stdAddress(v map[string]any) string {
 	if v == nil {
 		return ""
 	}
-	if t, _ := v["@type"].(string); t == "addr_none" {
+	if t, ok := v["@type"].(string); ok && t == "addr_none" {
 		return ""
 	}
-	addr, _ := v["address"].(string)
-	if addr == "" {
+	addr, ok := v["address"].(string)
+	if !ok || addr == "" {
 		return ""
 	}
 	wc := "0"
@@ -271,7 +274,7 @@ func (c *Client) actionsByTx(ctx context.Context, txHash string) ([]tonAction, e
 // order plus every account seen. Unmatched edges fall back to destination
 // account matching later in the indexer's topological order, so reordered or
 // hash-less envelopes still resolve.
-func downstream(tree *traceEnvelope, startHash string) ([]string, map[string]bool) {
+func downstream(tree *traceEnvelope, startHash string) (hashes []string, accounts map[string]bool) {
 	byInHash := make(map[string]string)
 	for h, tx := range tree.Txs {
 		if tx.In.Hash != "" {
@@ -380,7 +383,7 @@ func jettonReservoirs(group []tonAction) map[string]bool {
 	out := make(map[string]bool)
 	for _, a := range group {
 		switch a.Type {
-		case "jetton_transfer":
+		case opJettonTransfer:
 			var d jettonTransferDetails
 			if err := json.Unmarshal(a.Details, &d); err != nil {
 				continue
@@ -391,7 +394,7 @@ func jettonReservoirs(group []tonAction) map[string]bool {
 			if d.ReceiverJettonWallet != "" {
 				out[d.ReceiverJettonWallet] = true
 			}
-		case "jetton_burn":
+		case opJettonBurn:
 			var d jettonBurnDetails
 			if err := json.Unmarshal(a.Details, &d); err != nil {
 				continue

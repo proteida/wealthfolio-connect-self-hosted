@@ -79,13 +79,8 @@ func (c *Web3Client) resolveChains(ctx context.Context, w Wallet) (funded, histo
 	if !configured && (len(address) != 42 || !strings.HasPrefix(address, "0x")) {
 		return nil, nil, fmt.Errorf("okx_web3: automatic discovery requires an EVM address; configure chains for %s", w.Address)
 	}
-	if !configured {
-		if _, err := hex.DecodeString(address[2:]); err != nil {
-			return nil, nil, fmt.Errorf("okx_web3: invalid EVM address: %w", err)
-		}
-	}
-	if _, err := hex.DecodeString(address[2:]); err != nil {
-		return nil, nil, fmt.Errorf("okx_web3: invalid EVM address: %w", err)
+	if _, derr := hex.DecodeString(address[2:]); derr != nil {
+		return nil, nil, fmt.Errorf("okx_web3: invalid EVM address: %w", derr)
 	}
 	c.chainMu.Lock()
 	defer c.chainMu.Unlock()

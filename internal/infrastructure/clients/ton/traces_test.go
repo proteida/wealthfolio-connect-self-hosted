@@ -284,7 +284,7 @@ var _ = Describe("Real Affluent traces", func() {
 	It("pairs structurally when the query_id echo is missing", func() {
 		tree := load("staking1")
 		for _, a := range tree.Actions {
-			if a.Type != "jetton_transfer" {
+			if a.Type != opJettonTransfer {
 				continue
 			}
 			var d map[string]any
@@ -317,7 +317,7 @@ var _ = Describe("Real Affluent traces", func() {
 			}
 		}
 		for _, a := range tree.Actions {
-			if a.Type != "jetton_transfer" {
+			if a.Type != opJettonTransfer {
 				continue
 			}
 			var d map[string]any
@@ -376,7 +376,7 @@ var _ = Describe("Trace verification fallback", func() {
 					return
 				}
 				writeJSON(w, map[string]any{"actions": []any{
-					action("dep1", "trace-dep", "jetton_transfer", true, map[string]any{
+					action("dep1", "trace-dep", opJettonTransfer, true, map[string]any{
 						"asset": usdMaster, "sender": testRaw,
 						"receiver": usdMaster, "amount": "1000000",
 					}),

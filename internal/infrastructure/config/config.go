@@ -82,7 +82,8 @@ type CryptoConfig struct {
 	// TONWallets holds TON addresses in any form (raw or user-friendly),
 	// comma-separated via TON_WALLETS. Case is preserved: TON addresses
 	// are case-sensitive.
-	TONWallets []string}
+	TONWallets []string
+}
 
 // Config is the single source of truth for runtime configuration.
 type Config struct {
@@ -131,6 +132,42 @@ type Config struct {
 
 	// On-chain wallets fanned out through the OKX Web3 DEX integration.
 	DefiWallets []DefiWallet
+
+	// Steam CS2 inventory tracking (community + Web API, no third parties).
+	Steam SteamConfig
+}
+
+// SteamConfig holds Steam credentials and tuning. Session cookies and the
+// Web API key are sensitive: they live in the environment only, are never
+// persisted to normal tables, and must never be logged.
+type SteamConfig struct {
+	// SteamID is the steamid64 whose CS2 inventory is tracked.
+	SteamID string
+	// APIKey is the Steam Web API key (trade history only).
+	APIKey string
+	// Session holds raw Steam Community session cookies for the private
+	// inventory-history and market-history endpoints. Empty means only
+	// public endpoints are usable.
+	Session string
+	// RefreshToken is the WebBrowser refresh token minted by the one-time
+	// Node CLI (tools/steam-auth). When set, web cookies derive
+	// automatically and Session is not used.
+	RefreshToken string
+	// PriceTTL bounds caching of current market prices.
+	PriceTTL time.Duration
+	// Currency is the Steam wallet currency code for market prices.
+	// Steam prices are USD-only: the steam client coerces any value to
+	// 1 (USD). STEAM_CURRENCY is retained for backwards compatibility
+	// but has no effect beyond the parsed value.
+	Currency int
+	// HistoryBudget caps price-history backfills per sync (0 disables).
+	HistoryBudget int
+	// MinItemValueUSD drops stacks at or below this combined quantity ×
+	// price total (amounts aggregated by market name) from Steam positions
+	// and activities (only stack totals strictly above the threshold sync;
+	// unpriced stacks are excluded, filtered items stay in the inventory
+	// snapshot so a price rise re-admits them). Zero disables the filter.
+	MinItemValueUSD float64
 }
 
 // Loader is the function shape used internally; exposed for tests.
@@ -284,10 +321,38 @@ func LoadFrom(get Loader) (*Config, error) {
 	// DeFi wallets (consumed by the OKX Web3 integration).
 	if raw, ok := get("DEFI_WALLETS"); ok && strings.TrimSpace(raw) != "" {
 		var wallets []DefiWallet
-		if err := json.Unmarshal([]byte(raw), &wallets); err != nil {
-			return nil, fmt.Errorf("config: DEFI_WALLETS is not valid JSON: %w", err)
+		if derr := json.Unmarshal([]byte(raw), &wallets); derr != nil {
+			return nil, fmt.Errorf("config: DEFI_WALLETS is not valid JSON: %w", derr)
 		}
 		cfg.DefiWallets = wallets
+	}
+
+	// Steam CS2 inventory (all optional; empty disables the integration).
+	priceTTLMin, err := getInt(get, "STEAM_PRICE_TTL_MINUTES", 20)
+	if err != nil {
+		return nil, err
+	}
+	steamCurrency, err := getInt(get, "STEAM_CURRENCY", 1)
+	if err != nil {
+		return nil, err
+	}
+	historyBudget, err := getInt(get, "STEAM_HISTORY_BUDGET", 5)
+	if err != nil {
+		return nil, err
+	}
+	minItemValue, err := getFloat(get, "STEAM_MIN_ITEM_VALUE_USD", 10)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Steam = SteamConfig{
+		SteamID:         strings.TrimSpace(getString(get, "STEAM_ID", "")),
+		APIKey:          strings.TrimSpace(getString(get, "STEAM_API_KEY", "")),
+		Session:         strings.TrimSpace(getString(get, "STEAM_SESSION", "")),
+		RefreshToken:    strings.TrimSpace(getString(get, "STEAM_REFRESH_TOKEN", "")),
+		PriceTTL:        time.Duration(priceTTLMin) * time.Minute,
+		Currency:        steamCurrency,
+		HistoryBudget:   historyBudget,
+		MinItemValueUSD: minItemValue,
 	}
 
 	return cfg, nil
@@ -321,6 +386,18 @@ func getInt(get Loader, key string, def int) (int, error) {
 	parsed, err := strconv.Atoi(v)
 	if err != nil {
 		return 0, fmt.Errorf("config: %s must be an integer: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func getFloat(get Loader, key string, def float64) (float64, error) {
+	v, ok := get(key)
+	if !ok || strings.TrimSpace(v) == "" {
+		return def, nil
+	}
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil {
+		return 0, fmt.Errorf("config: %s must be a number: %w", key, err)
 	}
 	return parsed, nil
 }

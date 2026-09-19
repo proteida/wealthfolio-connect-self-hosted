@@ -74,7 +74,7 @@ type brokerageActivity = brokerage.Activity
 // cent-rounding is applied anywhere, so sub-cent transfers of any asset —
 // stablecoin or otherwise — survive the ledger.
 func buildActivity(wallet, symbol, tokenAddr string, qty float64, typ brokerage.ActivityType,
-	rawType, counterparty, hash, group string, nowUnix int64, amount, price, fee float64, feeAsset, note string, aborted bool,
+	rawType, counterparty, hash, group string, nowUnix int64, amount, price float64, note string,
 ) *brokerageActivity {
 	if qty <= 0 || hash == "" || symbol == "" || nowUnix <= 0 {
 		return nil
@@ -89,7 +89,7 @@ func buildActivity(wallet, symbol, tokenAddr string, qty float64, typ brokerage.
 	// a rounded price re-times quantity into cash dust. Conversion legs
 	// additionally carry a role bias (see biasedPrices) that guarantees the
 	// stored buy total never exceeds the stored sell total.
-	units, amount, fee := round8(math.Abs(qty)), round8(amount), round8(fee)
+	units, amount := round8(math.Abs(qty)), round8(amount)
 	// Fingerprint immutable transfer content so repeated syncs and overlapping
 	// pages produce the same ID. Direction is deliberately excluded: the
 	// action hash plus sides already identify a leg, and this lets type-only
@@ -111,22 +111,16 @@ func buildActivity(wallet, symbol, tokenAddr string, qty float64, typ brokerage.
 	if note != "" {
 		description += "; " + note
 	}
-	if aborted {
-		description += " (carrying transaction aborted)"
-	}
-	if fee > 0 {
-		description += fmt.Sprintf("; network fee: %g %s", fee, feeAsset)
-	}
 	return &brokerageActivity{
 		ID: idJoin(accountID, key), AccountID: accountID, SourceRecordID: key,
 		SourceGroupID: group, ExternalReferenceID: hash,
 		Type: typ, RawType: rawType, Units: units,
 		Price: price, Amount: amount,
-		Fee: fee, FeeAsset: feeAsset,
+		Fee: 0, FeeAsset: "",
 		TradeDate: time.Unix(nowUnix, 0).UTC(), Currency: brokerage.Currency{Code: "USD"},
 		Symbol: &brokerage.Symbol{Symbol: ticker, RawSymbol: ticker,
 			Type:     brokerage.SymbolType{Code: "CRYPTO", IsSupported: true},
-			Exchange: brokerage.Exchange{Code: "TON"}, Currency: brokerage.Currency{Code: "USD"}},
+			Exchange: brokerage.Exchange{Code: nativeTONSymbol}, Currency: brokerage.Currency{Code: "USD"}},
 		ProviderType: "ton", SourceSystem: "ton", NeedsReview: true, Description: description,
 	}
 }
@@ -139,10 +133,10 @@ func TranslateTON(wallets []TonWalletData) domainsync.BrokerSnapshot {
 	connection := brokerage.Connection{
 		ID:              "ton-conn",
 		AuthorizationID: "ton-auth",
-		BrokerageName:   "TON",
+		BrokerageName:   nativeTONSymbol,
 		BrokerageSlug:   "ton",
 		DisplayName:     "TON (Toncoin)",
-		Name:            "TON",
+		Name:            nativeTONSymbol,
 		Status:          brokerage.ConnectionActive,
 		UpdatedAt:       now,
 	}
@@ -195,7 +189,7 @@ func TranslateTON(wallets []TonWalletData) domainsync.BrokerSnapshot {
 					Name:        t.Name,
 					Description: t.Name,
 					Type:        brokerage.SymbolType{Code: "CRYPTO", IsSupported: true},
-					Exchange:    brokerage.Exchange{Code: "TON", Name: "TON"},
+					Exchange:    brokerage.Exchange{Code: nativeTONSymbol, Name: nativeTONSymbol},
 					Currency:    brokerage.Currency{Code: "USD"},
 				},
 				Units:                t.Quantity,
@@ -214,7 +208,7 @@ func TranslateTON(wallets []TonWalletData) domainsync.BrokerSnapshot {
 			BalanceTotal:           totalUSD,
 			BalanceCurrency:        "USD",
 			BrokerageAuthorization: "ton-auth",
-			InstitutionName:        "TON",
+			InstitutionName:        nativeTONSymbol,
 			SyncEnabled:            true,
 			Status:                 "open",
 			CreatedDate:            now,
@@ -317,9 +311,9 @@ type vaultAttribution struct {
 func (v vaultAttribution) buy(wallet string) *brokerageActivity {
 	act := buildActivity(wallet, v.symbol, v.master, v.qty,
 		brokerage.ActivityBuy, "STAKE_BUY", v.master,
-		"vault:"+v.master, v.master, v.time, v.amount, v.price, 0, "",
+		"vault:"+v.master, v.master, v.time, v.amount, v.price,
 		fmt.Sprintf("vault share acquisition of %g %s attributed from $%s deposits; no mint transfer indexed",
-			v.qty, v.symbol, formatUSD(v.amount)), false)
+			v.qty, v.symbol, formatUSD(v.amount)))
 	if act == nil {
 		return nil
 	}
@@ -341,6 +335,8 @@ func vaultAttributions(w TonWalletData) []vaultAttribution {
 		switch a.Type {
 		case brokerage.ActivityBuy, brokerage.ActivityDeposit, brokerage.ActivityTransferIn:
 			inbound[cexcommon.NormalizeAsset(a.Symbol.Symbol)] = true
+		default:
+			// Other activity types never mark inbound history.
 		}
 	}
 	var out []vaultAttribution
