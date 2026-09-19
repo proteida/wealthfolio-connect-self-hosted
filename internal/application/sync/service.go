@@ -108,7 +108,11 @@ func (s *Service) RunOnce(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results <- clientResult{id: client.ID(), err: s.runClient(ctx, client)}
+			err := s.runClient(ctx, client)
+			if err != nil {
+				s.log.Error().Err(err).Str("client", client.ID()).Msg("upstream sync failed")
+			}
+			results <- clientResult{id: client.ID(), err: err}
 		}()
 	}
 	wg.Wait()
@@ -136,8 +140,8 @@ func (s *Service) runClient(ctx context.Context, c domainsync.BrokerClient) erro
 		return nil
 	}
 	defer s.endClient(c.ID())
-	if err := s.syncOne(ctx, c); err != nil && ctx.Err() == nil {
-		s.log.Error().Err(err).Str("client", c.ID()).Msg("upstream sync failed")
+	err := s.syncOne(ctx, c)
+	if err != nil && ctx.Err() == nil {
 		return err
 	}
 	if ctx.Err() == nil {
@@ -362,7 +366,7 @@ func (s *Service) start(ctx context.Context) {
 }
 
 func (s *Service) loopClient(ctx context.Context, c domainsync.BrokerClient) {
-	s.runClient(ctx, c)
+	s.runAndLog(ctx, c)
 	interval := s.interval
 	if scheduled, ok := c.(domainsync.ScheduledBrokerClient); ok && scheduled.SyncInterval() > 0 {
 		interval = scheduled.SyncInterval()
@@ -377,8 +381,17 @@ func (s *Service) loopClient(ctx context.Context, c domainsync.BrokerClient) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.runClient(ctx, c)
+			s.runAndLog(ctx, c)
 		}
+	}
+}
+
+// runAndLog executes one client sync outside RunOnce's error aggregation
+// (the background scheduler loops). Failures are logged here because there
+// is no caller to propagate them to; shutdown cancellation is quiet.
+func (s *Service) runAndLog(ctx context.Context, c domainsync.BrokerClient) {
+	if err := s.runClient(ctx, c); err != nil && ctx.Err() == nil {
+		s.log.Error().Err(err).Str("client", c.ID()).Msg("upstream sync failed")
 	}
 }
 

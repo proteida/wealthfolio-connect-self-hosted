@@ -241,7 +241,7 @@ func LoadFrom(get Loader) (*Config, error) {
 	// Email allow-list. ALLOWED_EMAILS (comma-separated) is the canonical
 	// name; SELF_HOSTED_USER_EMAIL is kept as a single-value alias for
 	// backwards compatibility with earlier deployments.
-	emails := splitAndTrim(getString(get, "ALLOWED_EMAILS", ""), ",")
+	emails := splitAndTrim(getString(get, "ALLOWED_EMAILS", ""))
 	if len(emails) == 0 {
 		if v, ok := get("SELF_HOSTED_USER_EMAIL"); ok && strings.TrimSpace(v) != "" {
 			emails = []string{strings.TrimSpace(v)}
@@ -270,10 +270,10 @@ func LoadFrom(get Loader) (*Config, error) {
 	cfg.ServerPort = port
 	cfg.LogLevel = getString(get, "LOG_LEVEL", "info")
 	cfg.LogFormat = getString(get, "LOG_FORMAT", "console")
-	cfg.CORSOrigins = splitAndTrim(getString(get, "CORS_ORIGINS", "*"), ",")
+	cfg.CORSOrigins = splitAndTrim(getString(get, "CORS_ORIGINS", "*"))
 
 	// Auth modes
-	cfg.StaticTokenMode, err = getBool(get, "STATIC_TOKEN_MODE", false)
+	cfg.StaticTokenMode, err = getBool(get, "STATIC_TOKEN_MODE")
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +294,7 @@ func LoadFrom(get Loader) (*Config, error) {
 	cfg.RedisAddr = strings.TrimSpace(getString(get, "REDIS_ADDR", ""))
 
 	// Futu OpenD
-	futuEnabled, err := getBool(get, "FUTU_ENABLED", false)
+	futuEnabled, err := getBool(get, "FUTU_ENABLED")
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +312,7 @@ func LoadFrom(get Loader) (*Config, error) {
 	}
 
 	// IBKR Gateway / TWS
-	ibkrEnabled, err := getBool(get, "IBKR_ENABLED", false)
+	ibkrEnabled, err := getBool(get, "IBKR_ENABLED")
 	if err != nil {
 		return nil, err
 	}
@@ -365,7 +365,7 @@ func LoadFrom(get Loader) (*Config, error) {
 		}
 	}
 	cfg.Crypto.TONCenterAPIKey = getString(get, "TONCENTER_API_KEY", "")
-	cfg.Crypto.TONWallets = splitAndTrim(getString(get, "TON_WALLETS", ""), ",")
+	cfg.Crypto.TONWallets = splitAndTrim(getString(get, "TON_WALLETS", ""))
 	// DeFi wallets (consumed by the OKX Web3 integration).
 	if raw, ok := get("DEFI_WALLETS"); ok && strings.TrimSpace(raw) != "" {
 		var wallets []DefiWallet
@@ -409,7 +409,7 @@ func LoadFrom(get Loader) (*Config, error) {
 func loadSnapTrade(get Loader) (SnapTradeConfig, error) {
 	var cfg SnapTradeConfig
 	var err error
-	cfg.Enabled, err = getBool(get, "SNAPTRADE_ENABLED", false)
+	cfg.Enabled, err = getBool(get, "SNAPTRADE_ENABLED")
 	if err != nil {
 		return cfg, err
 	}
@@ -420,7 +420,7 @@ func loadSnapTrade(get Loader) (SnapTradeConfig, error) {
 	cfg.UserID = strings.TrimSpace(getString(get, "SNAPTRADE_USER_ID", ""))
 	cfg.UserSecret = strings.TrimSpace(getString(get, "SNAPTRADE_USER_SECRET", ""))
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(getString(get, "SNAPTRADE_BASE_URL", "https://api.snaptrade.com")), "/")
-	cfg.AccountIDs = splitAndTrim(getString(get, "SNAPTRADE_ACCOUNT_IDS", ""), ",")
+	cfg.AccountIDs = splitAndTrim(getString(get, "SNAPTRADE_ACCOUNT_IDS", ""))
 
 	cfg.HistoryStartDate, err = parseSnapTradeDate(getString(get, "SNAPTRADE_HISTORY_START_DATE", "01.01.2022"))
 	if err != nil {
@@ -474,11 +474,11 @@ func loadSnapTrade(get Loader) (SnapTradeConfig, error) {
 	if err != nil {
 		return cfg, err
 	}
-	cfg.AllowManualRefresh, err = getBool(get, "SNAPTRADE_ALLOW_MANUAL_REFRESH", false)
+	cfg.AllowManualRefresh, err = getBool(get, "SNAPTRADE_ALLOW_MANUAL_REFRESH")
 	if err != nil {
 		return cfg, err
 	}
-	cfg.AllowTransactionSync, err = getBool(get, "SNAPTRADE_ALLOW_TRANSACTION_SYNC", false)
+	cfg.AllowTransactionSync, err = getBool(get, "SNAPTRADE_ALLOW_TRANSACTION_SYNC")
 	if err != nil {
 		return cfg, err
 	}
@@ -621,7 +621,7 @@ func getFloat(get Loader, key string, def float64) (float64, error) {
 	return parsed, nil
 }
 
-func getBool(get Loader, key string, def bool) (bool, error) {
+func getBool(get Loader, key string) (bool, error) {
 	v, ok := get(key)
 	if !ok || v == "" {
 		return false, nil
@@ -633,8 +633,8 @@ func getBool(get Loader, key string, def bool) (bool, error) {
 	return parsed, nil
 }
 
-func splitAndTrim(value, sep string) []string {
-	parts := strings.Split(value, sep)
+func splitAndTrim(value string) []string {
+	parts := strings.Split(value, ",")
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		if t := strings.TrimSpace(p); t != "" {
