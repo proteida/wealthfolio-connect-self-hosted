@@ -134,7 +134,10 @@ func mapPositions(raw []rawPosition) ([]brokerage.Position, []brokerage.OptionPo
 		if currency == "" {
 			currency = position.Instrument.Currency
 		}
-		if strings.EqualFold(position.Instrument.Kind, "option") {
+		if strings.EqualFold(position.Instrument.Kind, "option") ||
+			strings.EqualFold(position.Instrument.Kind, "future_option") {
+			// Future-option positions (returned for IBKR connections) share
+			// the option instrument schema.
 			options = append(options, brokerage.OptionPosition{
 				OptionSymbol: mapPositionOption(position.Instrument), Units: position.Units.Value,
 				Price: position.Price.Value, AveragePurchasePrice: position.CostBasis.Value,
@@ -269,6 +272,13 @@ func mapActivity(accountID, rawAccountID string, raw rawActivity) (brokerage.Act
 		Description: raw.Description, TradeDate: tradeDate, Fee: raw.Fee.Value,
 		Institution: raw.Institution, ExternalReferenceID: raw.ExternalReferenceID,
 		ProviderType: "snaptrade", SourceSystem: "snaptrade", NeedsReview: needsReview,
+	}
+	// SnapTrade marks account-boundary crossings explicitly. Persist the
+	// marker so downstream validation treats them as external transfers
+	// rather than paired internal legs (which send explicit false).
+	switch strings.ToUpper(strings.TrimSpace(raw.Type)) {
+	case "EXTERNAL_ASSET_TRANSFER_IN", "EXTERNAL_ASSET_TRANSFER_OUT":
+		a.IsExternal = true
 	}
 	if a.Institution == "" {
 		a.Institution = ibkrInstitutionName

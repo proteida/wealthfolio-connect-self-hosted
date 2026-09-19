@@ -169,9 +169,13 @@ var _ = Describe("ActivityRepository", func() {
 		}
 		mock.ExpectBegin()
 		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
-			WillReturnResult(sqlmock.NewResult(0, 1000))
+			WillReturnResult(sqlmock.NewResult(0, 500))
 		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
-			WillReturnResult(sqlmock.NewResult(0, 1000))
+			WillReturnResult(sqlmock.NewResult(0, 500))
+		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
+			WillReturnResult(sqlmock.NewResult(0, 500))
+		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
+			WillReturnResult(sqlmock.NewResult(0, 500))
 		mock.ExpectExec(rx(`INSERT INTO "activities"`)).
 			WillReturnResult(sqlmock.NewResult(0, 500))
 		mock.ExpectCommit()

@@ -39,14 +39,14 @@ var _ = Describe("request signing", func() {
 		s := signer{auth: config.SnapTradeConfig{
 			AuthMode: "personal", ClientID: "client", ConsumerKey: "test-consumer",
 		}, clock: clk}
-		query, signature, err := s.sign("/api/v1/accounts", nil, nil)
+		query, signature, err := s.sign("/accounts", nil, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(query).To(Equal("clientId=client&timestamp=1700000000"))
 		Expect(query).NotTo(ContainSubstring("userId"))
-		canonical, canonicalErr := canonicalSignaturePayload("/api/v1/accounts", query, nil)
+		canonical, canonicalErr := canonicalSignaturePayload("/accounts", query, nil)
 		Expect(canonicalErr).NotTo(HaveOccurred())
-		Expect(string(canonical)).To(Equal(`{"content":null,"path":"/api/v1/accounts","query":"clientId=client&timestamp=1700000000"}`))
-		Expect(signature).To(Equal("AtOoePpmxJpSBZqPALde9hyymnbbMpnZg019g/LiSE8="))
+		Expect(string(canonical)).To(Equal(`{"content":null,"path":"/accounts","query":"clientId=client&timestamp=1700000000"}`))
+		Expect(signature).To(Equal("MtHrHDCWBaF9x+VTITzX72+fDqKswaT2BflbXJgm71w="))
 	})
 
 	It("signs Commercial credentials and endpoint query parameters in stable order", func() {
@@ -55,9 +55,9 @@ var _ = Describe("request signing", func() {
 			UserID: "user", UserSecret: "secret",
 		}, clock: clk}
 		params := url.Values{"startDate": {"2022-01-01"}, "limit": {"1000"}}
-		query, signature, err := s.sign("/api/v1/accounts/id/activities", params, nil)
+		query, signature, err := s.sign("/accounts/id/activities", params, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(query).To(Equal("clientId=client&limit=1000&startDate=2022-01-01&timestamp=1700000000&userId=user&userSecret=secret"))
-		Expect(signature).To(Equal("S2aeMDaCzlJgaAMRuNn61Wwvo6RGdFWdzoNrIT90hoM="))
+		Expect(signature).To(Equal("fsqghcu0QyIgb5722YlqRIGEAn+UBBoWOpDMbYQwGf4="))
 	})
 })

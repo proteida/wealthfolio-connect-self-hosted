@@ -61,11 +61,12 @@ func (r *activityRepo) List(ctx context.Context, f repository.ActivityFilter) ([
 }
 
 // activityUpsertChunkSize bounds a single INSERT's bind parameters. ActivityPO
-// carries ~40 columns, and PostgreSQL's pgx extended protocol rejects
+// carries ~70 columns, and PostgreSQL's pgx extended protocol rejects
 // statements with more than 65,535 parameters, so an uncapped batch (e.g.
 // 1,000 fills normalized into 2,000 rows) fails and the sync retries the
-// same oversized batch forever.
-const activityUpsertChunkSize = 1000
+// same oversized batch forever. 500 rows keep statements near ~36k
+// parameters with headroom for future columns.
+const activityUpsertChunkSize = 500
 
 // activityConflictColumns lists every mutable normalized column refreshed
 // when an activity upsert hits the (account_id, source_record_id) conflict.

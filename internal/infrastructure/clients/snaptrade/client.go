@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +45,10 @@ func New(cfg config.SnapTradeConfig, log zerolog.Logger, doer HTTPDoer) (*Client
 	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" {
 		return nil, errors.New("snaptrade: invalid base URL")
 	}
+	// SnapTrade serves canonical paths from the API root and deprecates the
+	// legacy /api/v1 prefix. Normalize a configured legacy base so every
+	// request below uses canonical paths.
+	baseURL.Path = strings.TrimSuffix(strings.TrimRight(baseURL.Path, "/"), "/api/v1")
 	if doer == nil {
 		doer = &http.Client{Timeout: cfg.RequestTimeout}
 	}
@@ -85,11 +90,11 @@ func (c *Client) Fetch(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 // other accounts and never emits an empty holdings replacement.
 func (c *Client) FetchAccountSnapshot(ctx context.Context) (domainsync.BrokerSnapshot, error) {
 	var connections []rawConnection
-	if err := c.api.get(ctx, "/api/v1/authorizations", "connections", "", nil, &connections); err != nil {
+	if err := c.api.get(ctx, "/authorizations", "connections", "", nil, &connections); err != nil {
 		return domainsync.BrokerSnapshot{}, fmt.Errorf("list SnapTrade connections: %w", err)
 	}
 	var accounts []rawAccount
-	if err := c.api.get(ctx, "/api/v1/accounts", "accounts", "", nil, &accounts); err != nil {
+	if err := c.api.get(ctx, "/accounts", "accounts", "", nil, &accounts); err != nil {
 		return domainsync.BrokerSnapshot{}, fmt.Errorf("list SnapTrade accounts: %w", err)
 	}
 	c.log.Info().Int("discovered_accounts", len(accounts)).Msg("discovered SnapTrade accounts")
@@ -161,7 +166,7 @@ func (c *Client) FetchAccountSnapshot(ctx context.Context) (domainsync.BrokerSna
 			c.log.Warn().Str("account", maskIdentifier(entry.account.ID)).Msg("SnapTrade connection is disabled; preserving cached account data")
 			continue
 		}
-		accountPath := "/api/v1/accounts/" + url.PathEscape(entry.account.ID)
+		accountPath := "/accounts/" + url.PathEscape(entry.account.ID)
 		detail := entry.account
 		if err := c.api.get(ctx, accountPath, "account_detail", entry.account.ID, nil, &detail); err != nil {
 			localAccounts = append(localAccounts, mapAccount(entry.account, entry.connection, now))
@@ -265,7 +270,7 @@ func (c *Client) streamAccountActivities(
 		query.Set("offset", strconv.Itoa(offset))
 		query.Set("limit", strconv.Itoa(c.config.PageSize))
 		var page rawActivityPage
-		endpoint := "/api/v1/accounts/" + url.PathEscape(remoteAccountID) + "/activities"
+		endpoint := "/accounts/" + url.PathEscape(remoteAccountID) + "/activities"
 		if err := c.api.get(ctx, endpoint, "activities", remoteAccountID, query, &page); err != nil {
 			return fmt.Errorf("account %s activities offset %d: %w", maskIdentifier(remoteAccountID), offset, err)
 		}
@@ -332,7 +337,7 @@ func (c *Client) maybeRefresh(ctx context.Context, authorizationID string) error
 		}
 		c.log.Info().Str("authorization", maskIdentifier(authorizationID)).Str("operation", operation.category).
 			Msg("explicit SnapTrade refresh requested")
-		path := "/api/v1/authorizations/" + url.PathEscape(authorizationID) + operation.path
+		path := "/authorizations/" + url.PathEscape(authorizationID) + operation.path
 		if err := c.api.post(ctx, path, operation.category, ""); err != nil {
 			operationErrors = append(operationErrors, fmt.Errorf("SnapTrade %s for authorization %s: %w", operation.category, maskIdentifier(authorizationID), err))
 			continue

@@ -132,10 +132,38 @@ var _ = Describe("SnapTrade mapping", func() {
 		Expect(options[0].OptionSymbol.OptionType).To(Equal(brokerage.OptionCall))
 	})
 
+	It("maps future-option positions through the option schema", func() {
+		_, options := mapPositions([]rawPosition{
+			{Instrument: rawInstrument{Kind: "future_option", Ticker: "ESM6 P6100", OptionType: "PUT", StrikePrice: decimal{Value: 6100, Valid: true}, ExpirationDate: "2026-06-19"}, Units: decimal{Value: 1, Valid: true}},
+		})
+		Expect(options).To(HaveLen(1))
+		Expect(options[0].OptionSymbol.OptionType).To(Equal(brokerage.OptionPut))
+		Expect(options[0].OptionSymbol.StrikePrice).To(Equal(6100.0))
+	})
+
 	It("uses structured brokerage matching before display fallback", func() {
 		Expect(isInteractiveBrokers(rawBrokerage{Slug: "INTERACTIVE_BROKERS"})).To(BeTrue())
 		Expect(isInteractiveBrokers(rawBrokerage{Name: "Interactive Brokers LLC"})).To(BeTrue())
 		Expect(isInteractiveBrokers(rawBrokerage{Slug: "FIDELITY", DisplayName: "Not IBKR"})).To(BeFalse())
+	})
+
+	DescribeTable("marks SnapTrade external transfers",
+		func(rawType string, expected brokerage.ActivityType) {
+			activity, err := mapActivity("account", "remote", activityOfType(rawType))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(activity.Type).To(Equal(expected))
+			Expect(activity.IsExternal).To(BeTrue())
+		},
+		Entry("external in", "EXTERNAL_ASSET_TRANSFER_IN", brokerage.ActivityTransferIn),
+		Entry("external out", "EXTERNAL_ASSET_TRANSFER_OUT", brokerage.ActivityTransferOut),
+		Entry("external in lowercase", "external_asset_transfer_in", brokerage.ActivityTransferIn),
+	)
+
+	It("leaves ordinary transfers without the external marker", func() {
+		activity, err := mapActivity("account", "remote", activityOfType("TRANSFER_IN"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(activity.Type).To(Equal(brokerage.ActivityTransferIn))
+		Expect(activity.IsExternal).To(BeFalse())
 	})
 
 	DescribeTable("maps account categories",

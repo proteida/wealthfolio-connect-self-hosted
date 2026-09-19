@@ -61,22 +61,28 @@ var _ = Describe("SnapTrade client", func() {
 		Expect(client.api.doer).To(BeAssignableToTypeOf(&http.Client{}))
 	})
 
+	It("normalizes a legacy /api/v1 base URL to canonical root paths", func() {
+		client, err := New(testConfig("https://example.test/api/v1/"), zerolog.Nop(), nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(client.api.baseURL.Path).To(BeEmpty())
+	})
+
 	It("exposes its scheduler identity and supports fallback IBKR discovery through Fetch", func() {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer GinkgoRecover()
 			switch r.URL.Path {
-			case "/api/v1/authorizations":
+			case "/authorizations":
 				respondJSON(w, []any{})
-			case "/api/v1/accounts":
+			case "/accounts":
 				respondJSON(w, []any{map[string]any{
 					"id": "fallback", "brokerage_authorization": "legacy-auth",
 					"institution_name": "Interactive Brokers (U.K.) Limited",
 				}})
-			case "/api/v1/accounts/fallback":
+			case "/accounts/fallback":
 				respondJSON(w, map[string]any{"id": "fallback", "brokerage_authorization": "legacy-auth", "institution_name": "Interactive Brokers"})
-			case "/api/v1/accounts/fallback/balances":
+			case "/accounts/fallback/balances":
 				respondJSON(w, []any{})
-			case "/api/v1/accounts/fallback/positions/all":
+			case "/accounts/fallback/positions/all":
 				respondJSON(w, map[string]any{"results": []any{}})
 			default:
 				http.NotFound(w, r)
@@ -100,24 +106,24 @@ var _ = Describe("SnapTrade client", func() {
 			Expect(r.URL.Query().Has("userId")).To(BeFalse())
 			Expect(r.Header.Get("Signature")).NotTo(BeEmpty())
 			switch r.URL.Path {
-			case "/api/v1/authorizations":
+			case "/authorizations":
 				respondJSON(w, []any{
 					map[string]any{"id": "auth-ibkr", "brokerage": map[string]any{"slug": "INTERACTIVE_BROKERS", "name": "Interactive Brokers", "display_name": "IBKR", "enabled": true}},
 					map[string]any{"id": "auth-other", "brokerage": map[string]any{"slug": "FIDELITY", "name": "Fidelity", "enabled": true}},
 				})
-			case "/api/v1/accounts":
+			case "/accounts":
 				respondJSON(w, []any{
 					map[string]any{"id": "account-ibkr", "brokerage_authorization": "auth-ibkr", "name": "Margin", "institution_name": "Interactive Brokers", "created_date": "2024-01-01T00:00:00Z", "balance": map[string]any{"total": map[string]any{"amount": 1000, "currency": "EUR"}}},
 					map[string]any{"id": "account-other", "brokerage_authorization": "auth-other", "institution_name": "Interactive Brokers"},
 				})
-			case "/api/v1/accounts/account-ibkr":
+			case "/accounts/account-ibkr":
 				respondJSON(w, map[string]any{"id": "account-ibkr", "brokerage_authorization": "auth-ibkr", "name": "Margin", "raw_type": "MARGIN", "institution_name": "Interactive Brokers LLC", "created_date": "2024-01-01T00:00:00Z", "balance": map[string]any{"total": map[string]any{"amount": 1200, "currency": "EUR"}}})
-			case "/api/v1/accounts/account-ibkr/balances":
+			case "/accounts/account-ibkr/balances":
 				respondJSON(w, []any{
 					map[string]any{"currency": map[string]any{"code": "EUR", "name": "Euro"}, "cash": 100, "buying_power": 200},
 					map[string]any{"currency": map[string]any{"code": "USD", "name": "US Dollar"}, "cash": 50, "buying_power": 50},
 				})
-			case "/api/v1/accounts/account-ibkr/positions/all":
+			case "/accounts/account-ibkr/positions/all":
 				respondJSON(w, map[string]any{"results": []any{
 					map[string]any{"instrument": map[string]any{"kind": "stock", "symbol": "AAPL", "raw_symbol": "AAPL", "currency": "USD", "exchange": "XNAS"}, "units": "2", "price": "200", "cost_basis": "150", "currency": "USD"},
 					map[string]any{"instrument": map[string]any{"kind": "option", "ticker": "AAPL-C", "option_type": "CALL", "strike_price": "240", "expiration_date": "2026-12-18"}, "units": "1", "price": "4", "cost_basis": "3", "currency": "USD"},
@@ -215,7 +221,7 @@ var _ = Describe("SnapTrade client", func() {
 		cfg.MaxRetries = 1
 		client, _, waits := testClient(cfg, server.Client())
 		var out []rawAccount
-		Expect(client.api.get(context.Background(), "/api/v1/accounts", "accounts", "", nil, &out)).To(Succeed())
+		Expect(client.api.get(context.Background(), "/accounts", "accounts", "", nil, &out)).To(Succeed())
 		Expect(attempts.Load()).To(Equal(int32(2)))
 		Expect(*waits).To(ContainElement(5 * time.Second))
 	})
@@ -234,7 +240,7 @@ var _ = Describe("SnapTrade client", func() {
 		cfg.AuthMode, cfg.UserID, cfg.UserSecret, cfg.MaxRetries = "commercial", "user", "user-secret", 3
 		client, _, _ := testClient(cfg, server.Client())
 		var out []rawAccount
-		err := client.api.get(context.Background(), "/api/v1/accounts", "accounts", "", nil, &out)
+		err := client.api.get(context.Background(), "/accounts", "accounts", "", nil, &out)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).NotTo(ContainSubstring("user-secret"))
 		Expect(err.Error()).NotTo(ContainSubstring("clientId=client"))
@@ -247,8 +253,8 @@ var _ = Describe("SnapTrade client", func() {
 			defer GinkgoRecover()
 			Expect(r.Method).To(Equal(http.MethodPost))
 			Expect(r.URL.Path).To(Or(
-				Equal("/api/v1/authorizations/auth-id/refresh"),
-				Equal("/api/v1/authorizations/auth-id/transactions/sync"),
+				Equal("/authorizations/auth-id/refresh"),
+				Equal("/authorizations/auth-id/transactions/sync"),
 			))
 			calls.Add(1)
 			w.WriteHeader(http.StatusNoContent)
@@ -270,17 +276,17 @@ var _ = Describe("SnapTrade client", func() {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer GinkgoRecover()
 			switch r.URL.Path {
-			case "/api/v1/authorizations":
+			case "/authorizations":
 				respondJSON(w, []any{map[string]any{"id": "auth", "brokerage": map[string]any{"slug": "IBKR", "name": "Interactive Brokers"}}})
-			case "/api/v1/accounts":
+			case "/accounts":
 				respondJSON(w, []any{map[string]any{"id": "account", "brokerage_authorization": "auth", "institution_name": "Interactive Brokers"}})
-			case "/api/v1/accounts/account":
+			case "/accounts/account":
 				respondJSON(w, map[string]any{"id": "account", "brokerage_authorization": "auth", "institution_name": "Interactive Brokers"})
-			case "/api/v1/accounts/account/balances":
+			case "/accounts/account/balances":
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = fmt.Fprint(w, `{"detail":"upstream unavailable"}`)
-			case "/api/v1/accounts/account/positions/all":
+			case "/accounts/account/positions/all":
 				respondJSON(w, map[string]any{"results": []any{}})
 			default:
 				http.NotFound(w, r)
@@ -298,12 +304,12 @@ var _ = Describe("SnapTrade client", func() {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer GinkgoRecover()
 			switch r.URL.Path {
-			case "/api/v1/authorizations":
+			case "/authorizations":
 				respondJSON(w, []any{map[string]any{
 					"id": "disabled-auth", "disabled": true,
 					"brokerage": map[string]any{"slug": "IBKR", "name": "Interactive Brokers"},
 				}})
-			case "/api/v1/accounts":
+			case "/accounts":
 				respondJSON(w, []any{map[string]any{
 					"id": "disabled-account", "brokerage_authorization": "disabled-auth",
 					"institution_name": "Interactive Brokers",

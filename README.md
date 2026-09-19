@@ -258,7 +258,7 @@ two logical Wealthfolio accounts containing overlapping economic data.
 | `SNAPTRADE_CONSUMER_KEY` | — | SnapTrade signing secret; required when enabled. |
 | `SNAPTRADE_USER_ID` | — | Commercial SnapTrade user ID. Omitted for Personal requests. |
 | `SNAPTRADE_USER_SECRET` | — | Commercial SnapTrade user secret. Omitted for Personal requests. |
-| `SNAPTRADE_BASE_URL` | `https://api.snaptrade.com` | API origin. HTTP is rejected except for loopback tests. |
+| `SNAPTRADE_BASE_URL` | `https://api.snaptrade.com` | API origin (canonical root paths; a trailing legacy `/api/v1` is tolerated). HTTP is rejected except for loopback tests. |
 | `SNAPTRADE_ACCOUNT_IDS` | — | Optional comma-separated SnapTrade account UUID allow-list; empty selects every discovered IBKR account. |
 | `SNAPTRADE_HISTORY_START_DATE` | `01.01.2022` | Inclusive history start, in `DD.MM.YYYY` or `YYYY-MM-DD` form. |
 | `SNAPTRADE_SYNC_INTERVAL_MINUTES` | `240` | Per-client cadence; values below 60 are rejected. |
