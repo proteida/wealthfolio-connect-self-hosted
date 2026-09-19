@@ -204,6 +204,19 @@ func mapPositionOption(raw rawInstrument) brokerage.OptionSymbol {
 	underlying := brokerage.Symbol{}
 	if raw.UnderlyingSymbol != nil {
 		underlying = mapSymbol(*raw.UnderlyingSymbol)
+	} else if raw.Underlying != nil {
+		// Future-option positions nest a FutureInstrument under
+		// "underlying" instead of a universal symbol. Track the root
+		// symbol (e.g. ES) and keep the contract display symbol as raw.
+		symbol := raw.Underlying.RootSymbol
+		if symbol == "" {
+			symbol = raw.Underlying.Symbol
+		}
+		underlying = brokerage.Symbol{
+			Symbol: symbol, RawSymbol: raw.Underlying.Symbol,
+			Exchange: brokerage.Exchange{Code: raw.Underlying.Exchange},
+			Currency: brokerage.Currency{Code: strings.ToUpper(raw.Underlying.Currency)},
+		}
 	}
 	return brokerage.OptionSymbol{
 		Ticker: ticker, OptionType: brokerage.OptionSide(strings.ToUpper(raw.OptionType)),

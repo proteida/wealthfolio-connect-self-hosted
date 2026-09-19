@@ -169,6 +169,21 @@ type rawInstrument struct {
 	ExpirationDate   string              `json:"expiration_date"`
 	IsMiniOption     bool                `json:"is_mini_option"`
 	UnderlyingSymbol *rawUniversalSymbol `json:"underlying_symbol"`
+	// Underlying carries SnapTrade's FutureInstrument shape nested under
+	// future_option positions (wire field "underlying"). Plain option
+	// instruments keep reporting UnderlyingSymbol above.
+	Underlying *rawFutureUnderlying `json:"underlying"`
+}
+
+// rawFutureUnderlying mirrors SnapTrade's FutureInstrument object nested
+// under future_option position instruments.
+type rawFutureUnderlying struct {
+	Symbol         string `json:"symbol"`
+	RootSymbol     string `json:"root_symbol"`
+	ExpirationCode string `json:"expiration_code"`
+	ExpirationDate string `json:"expiration_date"`
+	Currency       string `json:"currency"`
+	Exchange       string `json:"exchange"`
 }
 
 type rawPosition struct {

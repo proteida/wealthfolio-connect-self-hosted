@@ -134,11 +134,17 @@ var _ = Describe("SnapTrade mapping", func() {
 
 	It("maps future-option positions through the option schema", func() {
 		_, options := mapPositions([]rawPosition{
-			{Instrument: rawInstrument{Kind: "future_option", Ticker: "ESM6 P6100", OptionType: "PUT", StrikePrice: decimal{Value: 6100, Valid: true}, ExpirationDate: "2026-06-19"}, Units: decimal{Value: 1, Valid: true}},
+			{Instrument: rawInstrument{
+				Kind: "future_option", Ticker: "ESM6 P6100", OptionType: "PUT",
+				StrikePrice: decimal{Value: 6100, Valid: true}, ExpirationDate: "2026-06-19",
+				Underlying: &rawFutureUnderlying{Symbol: "ESM26", RootSymbol: "ES", Currency: "USD", Exchange: "XCME"},
+			}, Units: decimal{Value: 1, Valid: true}},
 		})
 		Expect(options).To(HaveLen(1))
 		Expect(options[0].OptionSymbol.OptionType).To(Equal(brokerage.OptionPut))
 		Expect(options[0].OptionSymbol.StrikePrice).To(Equal(6100.0))
+		Expect(options[0].OptionSymbol.Underlying.Symbol).To(Equal("ES"))
+		Expect(options[0].OptionSymbol.Underlying.RawSymbol).To(Equal("ESM26"))
 	})
 
 	It("uses structured brokerage matching before display fallback", func() {
