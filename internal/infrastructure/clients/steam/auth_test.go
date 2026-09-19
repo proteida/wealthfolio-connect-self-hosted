@@ -62,7 +62,7 @@ func newAuthFixture(finalizeBody map[string]any) *authFixture {
 func (f *authFixture) transferURL() string { return f.server.URL + "/transfer" }
 
 func (f *authFixture) client() *SteamAuthClient {
-	c := NewSteamAuthClient("76561198000000000", "refresh-token-value", f.server.Client(), f.server.URL+"/jwt/finalizelogin")
+	c := NewSteamAuthClient("76561199495663064", "refresh-token-value", f.server.Client(), f.server.URL+"/jwt/finalizelogin")
 	c.allowHosts = []string{"127.0.0.1"}
 	return c
 }
@@ -190,7 +190,7 @@ var _ = Describe("Authenticated retry", func() {
 				map[string]any{"url": srv.URL + "/transfer", "params": map[string]any{"nonce": "n"}},
 			},
 		}
-		c := NewSteamAuthClient("76561198000000000", "tok", srv.Client(), srv.URL+"/jwt/finalizelogin")
+		c := NewSteamAuthClient("76561199495663064", "tok", srv.Client(), srv.URL+"/jwt/finalizelogin")
 		c.allowHosts = []string{"127.0.0.1"}
 		authed, err := c.AuthenticatedClient(context.Background())
 		Expect(err).NotTo(HaveOccurred())

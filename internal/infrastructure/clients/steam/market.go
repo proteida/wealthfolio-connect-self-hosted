@@ -48,6 +48,10 @@ type marketPage struct {
 	Events      []json.RawMessage          `json:"events"`
 	Purchases   map[string]json.RawMessage `json:"purchases"`
 	Listings    map[string]json.RawMessage `json:"listings"`
+	// Assets carries per-asset descriptions (market names, post-trade
+	// identity) keyed by asset/class linkage. Shape is undocumented and
+	// parsed defensively; see parseMarketAssets.
+	Assets map[string]json.RawMessage `json:"assets"`
 	// Keys records the envelope's top-level keys for drift visibility.
 	Keys []string `json:"-"`
 }
@@ -204,6 +208,91 @@ func listingToTx(l marketListing, purchase *marketPurchase, names map[string]str
 		return tx, false
 	}
 	return tx, true
+}
+
+// parseMarketAssets extracts market names from the response assets map.
+// Production envelopes nest assets by app, context and asset ID
+// ({appid: {contextid: {assetid: {...}}}}); flatter shapes are tolerated
+// too. The tree is traversed recursively: any object carrying a market
+// name plus a class or asset identity contributes its name, indexed by
+// every plausible key. Callers merge with fill-missing semantics so
+// inventory-history descriptions keep precedence.
+func parseMarketAssets(raw map[string]json.RawMessage) map[string]string {
+	out := map[string]string{}
+	var walk func(v json.RawMessage, key string)
+	walk = func(v json.RawMessage, key string) {
+		s := strings.TrimSpace(string(v))
+		if s == "" {
+			return
+		}
+		switch s[0] {
+		case '{':
+			var d struct {
+				ClassID        any    `json:"classid"`
+				InstanceID     any    `json:"instanceid"`
+				AssetID        any    `json:"assetid"`
+				MarketHashName string `json:"market_hash_name"`
+				Name           string `json:"name"`
+			}
+			if err := json.Unmarshal(v, &d); err != nil {
+				return
+			}
+			name := d.MarketHashName
+			if name == "" {
+				name = d.Name
+			}
+			classID, assetID := strVal(d.ClassID), strVal(d.AssetID)
+			if name != "" && (classID != "" || assetID != "") {
+				if key != "" {
+					out[key] = name
+				}
+				if classID != "" {
+					out[classID+"_"+strVal(d.InstanceID)] = name
+				}
+				if assetID != "" {
+					out[assetID] = name
+				}
+			}
+			// Containers share the object shape: recurse so nested
+			// app/context/asset levels resolve.
+			var obj map[string]json.RawMessage
+			if err := json.Unmarshal(v, &obj); err != nil {
+				return
+			}
+			for k, child := range obj {
+				walk(child, k)
+			}
+		case '[':
+			var arr []json.RawMessage
+			if err := json.Unmarshal(v, &arr); err != nil {
+				return
+			}
+			for _, child := range arr {
+				walk(child, "")
+			}
+		}
+	}
+	for key, entry := range raw {
+		walk(entry, key)
+	}
+	return out
+}
+
+// mergeMarketNames combines inventory-history descriptions (authoritative)
+// with the market response assets map (fill-missing): rows whose identity
+// never appeared in history still resolve names from the market payload.
+func mergeMarketNames(descs map[string]string, assets map[string]string) map[string]string {
+	if len(assets) == 0 {
+		return descs
+	}
+	out := make(map[string]string, len(descs)+len(assets))
+	for k, v := range assets {
+		out[k] = v
+	}
+	for k, v := range descs {
+		out[k] = v
+	}
+	return out
 }
 
 func stripTags(s string) string {
@@ -409,35 +498,63 @@ func parseMarketStructured(env marketPage, mySteamID string, names map[string]st
 	return out
 }
 
-// fetchMarketHistory pages myhistory until total_count is covered, the
-// pages stop advancing, or the page cap hits. Partial pages are returned
-// with complete=false so the importer never mistakes them for exhaustive.
+// marketPageSize is the myhistory page size. marketResumeOverlap rewinds
+// resumed walks by one page: offsets shift as newer transactions arrive
+// (or older rows disappear), and the overlapped page re-imports
+// idempotently through external-ID upserts instead of risking a gap.
+const (
+	marketPageSize      = 500
+	marketResumeOverlap = 500
+)
+
+// marketResume is the provider offset for continuing a capped market
+// walk. The stored value is the literal next offset; callers rewind by
+// marketResumeOverlap when resuming.
+type marketResume struct {
+	Offset int `json:"offset"`
+}
+
+// fetchMarketHistory pages myhistory from startOffset until total_count
+// is covered, the pages stop advancing, or the page cap hits. Partial
+// pages are returned with complete=false so the importer never mistakes
+// them for exhaustive; capped walks return the next offset to resume from
+// (-1 when complete: nothing to resume). Completeness is measured against
+// total_count coverage (start + pageSize), never against parsed row
+// counts: unparseable rows must not shrink the range deemed imported.
 // names resolves classid_instanceid (from inventory-history descriptions)
-// because purchase rows carry identity but no market names.
-func (c *Client) fetchMarketHistory(ctx context.Context, mySteamID string, names map[string]string) ([]domainsteam.MarketTransaction, bool, error) {
-	const pageSize = 500
+// because purchase rows carry identity but no market names; the response
+// assets map fills identities history never described.
+func (c *Client) fetchMarketHistory(ctx context.Context, mySteamID string, names map[string]string, startOffset int) ([]domainsteam.MarketTransaction, bool, int, error) {
+	if startOffset < 0 {
+		startOffset = 0
+	}
 	var all []domainsteam.MarketTransaction
 	seen := map[string]bool{}
 	total := -1
+	next := -1
 	for page := 0; page < c.cfg.MaxPages; page++ {
-		start := page * pageSize
+		start := startOffset + page*marketPageSize
 		if total >= 0 && start >= total {
-			return all, true, nil
+			return all, true, -1, nil
 		}
 		q := url.Values{
 			"query":    {""},
 			"start":    {strconv.Itoa(start)},
-			"count":    {strconv.Itoa(pageSize)},
+			"count":    {strconv.Itoa(marketPageSize)},
 			"norender": {"1"},
 		}
 		var env marketPage
 		if err := c.getCommunity(ctx, "/market/myhistory/render/", q, &env); err != nil {
-			return all, false, err
+			return all, false, -1, err
+		}
+		if !env.Success {
+			return all, false, -1, steamErr("market history", fmt.Errorf("success=false"))
 		}
 		if total < 0 {
 			total = env.TotalCount
 		}
-		rows := parseMarketStructured(env, mySteamID, names)
+		resolved := mergeMarketNames(names, parseMarketAssets(env.Assets))
+		rows := parseMarketStructured(env, mySteamID, resolved)
 		if len(rows) == 0 {
 			var html string
 			if len(env.ResultsHTML) > 0 {
@@ -452,8 +569,12 @@ func (c *Client) fetchMarketHistory(ctx context.Context, mySteamID string, names
 		if len(rows) == 0 {
 			c.log.Info().Strs("shape", env.Keys).Msg("steam market history empty page")
 			// Empty page before total_count: Steam truncated the range.
-			// Keep what we have; do not claim completeness.
-			return all, start >= total, nil
+			// Keep what we have; do not claim completeness. Resume at
+			// this offset so the gap is retried instead of skipped.
+			if start >= total {
+				return all, true, -1, nil
+			}
+			return all, false, start, nil
 		}
 		for _, tx := range rows {
 			if seen[tx.ExternalID] {
@@ -462,9 +583,10 @@ func (c *Client) fetchMarketHistory(ctx context.Context, mySteamID string, names
 			seen[tx.ExternalID] = true
 			all = append(all, tx)
 		}
-		if len(rows) < pageSize {
-			return all, true, nil
+		if total >= 0 && start+marketPageSize >= total {
+			return all, true, -1, nil
 		}
+		next = start + marketPageSize
 	}
-	return all, false, nil
+	return all, false, next, nil
 }

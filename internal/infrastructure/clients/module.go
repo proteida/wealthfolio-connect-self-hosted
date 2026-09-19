@@ -12,6 +12,7 @@ import (
 	"go.uber.org/fx"
 
 	appprices "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/prices"
+	steamprices "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/steamprices"
 	appsync "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/sync"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/repository"
 	domainsync "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/sync"
@@ -35,6 +36,7 @@ var Module = fx.Module("infrastructure.clients",
 		appsync.AsBrokerClient(NewFutu),
 		appsync.AsBrokerClient(NewIBKR),
 		NewCryptoClients,
+		AsSteamPriceProvider(NewSteamPriceProvider),
 	),
 )
 
@@ -154,6 +156,33 @@ func NewSteam(cfg *config.Config, log zerolog.Logger, history repository.Activit
 	if priceHistory != nil {
 		c.SetPriceHistoryStore(priceHistory)
 	}
+	return c
+}
+
+// AsSteamPriceProvider annotates a Steam price provider for fx.
+func AsSteamPriceProvider(f any) any {
+	return fx.Annotate(f, fx.As(new(steamprices.Provider)))
+}
+
+// NewSteamPriceProvider builds the public Steam price provider. The
+// priceoverview endpoint needs no credentials, so none are configured:
+// public reads must never trigger session refresh flows or attach
+// cookies. Fetched current quotes are remembered through the shared
+// history store for 24h under a dedicated cache namespace so they can
+// never satisfy the sync client's shorter freshness window.
+func NewSteamPriceProvider(cfg *config.Config, prices *appprices.Service, history repository.PriceHistoryRepository) *steam.Client {
+	c := steam.New(steam.ClientConfig{
+		SteamID:         cfg.Steam.SteamID,
+		PriceTTL:        steamprices.PublicPriceTTL,
+		Currency:        cfg.Steam.Currency,
+		HistoryBudget:   0,
+		MinItemValueUSD: 0,
+		CacheNamespace:  "public",
+	}, nil)
+	if prices != nil {
+		c.SetPriceService(prices)
+	}
+	c.SetPriceHistoryStore(history)
 	return c
 }
 

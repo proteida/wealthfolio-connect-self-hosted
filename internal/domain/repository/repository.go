@@ -136,12 +136,20 @@ type SteamAssetRepository interface {
 	SaveMarketTransactions(ctx context.Context, steamID string, txs []SteamMarketRow) error
 	// SaveTrades stores normalized trades, skipping known trade IDs.
 	SaveTrades(ctx context.Context, steamID string, trades []SteamTradeRow) error
-	// SaveLots replaces the lot set for a market_hash_name.
+	// SaveLots replaces the whole lot set for the account: stale lots
+	// absent from the new set are cleared. Callers must only invoke it
+	// for complete snapshots.
 	SaveLots(ctx context.Context, steamID string, lots []SteamLotRow) error
-	// SaveAcquisitions replaces per-asset acquisition records.
+	// SaveAcquisitions upserts per-asset acquisition records with an
+	// upgrade-only rule: stored evidence is replaced solely by
+	// equal-or-stronger evidence, never downgraded.
 	SaveAcquisitions(ctx context.Context, steamID string, acquisitions []SteamAcquisitionRow) error
 	// CurrentAssets returns the latest known asset states for valuation.
 	CurrentAssets(ctx context.Context, steamID string) ([]SteamAssetState, error)
+	// AcquisitionsForAssets returns stored acquisition records for the
+	// given asset IDs, independently of any snapshot baseline, so assets
+	// first seen in a partial sync keep recoverable evidence.
+	AcquisitionsForAssets(ctx context.Context, steamID string, assetIDs []string) ([]SteamAcquisitionRow, error)
 }
 
 // SteamEventRow is one stored inventory-history event.

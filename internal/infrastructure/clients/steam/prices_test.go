@@ -39,7 +39,8 @@ var _ = Describe("Steam market prices", func() {
 			Expect(r.URL.Query().Get("market_hash_name")).To(Equal("AK-47 | Redline (Field-Tested)"))
 			writeJSON(w, map[string]any{"success": true, "median_price": "$31.28", "lowest_price": "$30.00", "volume": "12"})
 		}
-		v, kind, ok := newClient().CurrentPrice(context.Background(), "AK-47 | Redline (Field-Tested)")
+		v, kind, _, ok, err := newClient().CurrentPrice(context.Background(), "AK-47 | Redline (Field-Tested)")
+		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
 		Expect(kind).To(Equal("steam_median"))
 		Expect(v).To(BeNumerically("~", 31.28, 1e-9))
@@ -50,7 +51,8 @@ var _ = Describe("Steam market prices", func() {
 		handler = func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]any{"success": true, "lowest_price": "$30.00"})
 		}
-		v, _, ok := newClient().CurrentPrice(context.Background(), "AK")
+		v, _, _, ok, err := newClient().CurrentPrice(context.Background(), "AK")
+		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
 		Expect(v).To(Equal(30.0))
 	})
@@ -59,7 +61,8 @@ var _ = Describe("Steam market prices", func() {
 		handler = func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]any{"success": false})
 		}
-		_, _, ok := newClient().CurrentPrice(context.Background(), "AK")
+		_, _, _, ok, err := newClient().CurrentPrice(context.Background(), "AK")
+		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeFalse())
 	})
 
@@ -74,15 +77,36 @@ var _ = Describe("Steam market prices", func() {
 		v, ok := parseSteamMoney("$31.28")
 		Expect(ok).To(BeTrue())
 		Expect(v).To(Equal(31.28))
+		v, ok = parseSteamMoney("31,28€")
+		Expect(ok).To(BeTrue())
+		Expect(v).To(Equal(31.28))
+		v, ok = parseSteamMoney("1,234.56")
+		Expect(ok).To(BeTrue())
+		Expect(v).To(Equal(1234.56))
+		v, ok = parseSteamMoney("1.234,56")
+		Expect(ok).To(BeTrue())
+		Expect(v).To(Equal(1234.56))
+		v, ok = parseSteamMoney("1,234")
+		Expect(ok).To(BeTrue())
+		Expect(v).To(Equal(1234.0))
 		_, ok = parseSteamMoney("--")
 		Expect(ok).To(BeFalse())
 		_, ok = parseSteamMoney("")
 		Expect(ok).To(BeFalse())
 	})
 
+	It("normalizes price keys across case and whitespace", func() {
+		a1, c1 := PriceAssetKey("Gamma 2 Case", 1)
+		a2, c2 := PriceAssetKey("  gamma  2  CASE ", 1)
+		Expect(a1).To(Equal(a2))
+		Expect(c1).To(Equal(c2))
+		Expect(priceDedupeKey("Gamma  2 Case")).To(Equal(priceDedupeKey("gamma 2 case")))
+	})
+
 	It("syncs price history through the store", func() {
 		handler = func(w http.ResponseWriter, r *http.Request) {
 			Expect(r.URL.Path).To(Equal("/market/pricehistory/"))
+			Expect(r.URL.Query().Get("currency")).To(Equal("1"))
 			writeJSON(w, map[string]any{"success": true, "prices": []any{
 				[]any{"May 08 2025", 31.28, "12"},
 				[]any{"May 09 2025", "32.00", "7"},
@@ -92,16 +116,49 @@ var _ = Describe("Steam market prices", func() {
 		store := newStubPriceStore()
 		c := newClient()
 		c.cfg.Session = "sessionid=x"
-		n, err := c.SyncPriceHistory(context.Background(), "AK", store)
+		n, err := c.SyncPriceHistory(context.Background(), "AK", store, 31.5, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(2))
 		Expect(store.puts).To(Equal(1))
 	})
 
+	It("rejects history series in the wrong currency", func() {
+		handler = func(w http.ResponseWriter, r *http.Request) {
+			// Session-currency series (~44x the USD quote): must never
+			// land in the USD store.
+			writeJSON(w, map[string]any{"success": true, "prices": []any{
+				[]any{"May 08 2025", 1380.0, "12"},
+				[]any{"May 09 2025", 1408.0, "7"},
+			}})
+		}
+		store := newStubPriceStore()
+		c := newClient()
+		c.cfg.Session = "sessionid=x"
+		n, err := c.SyncPriceHistory(context.Background(), "AK", store, 31.5, true)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(0))
+		Expect(store.puts).To(Equal(0))
+	})
+
+	It("skips history without a fresh quote to validate against", func() {
+		handler = func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, map[string]any{"success": true, "prices": []any{
+				[]any{"May 08 2025", 31.28, "12"},
+			}})
+		}
+		store := newStubPriceStore()
+		c := newClient()
+		c.cfg.Session = "sessionid=x"
+		n, err := c.SyncPriceHistory(context.Background(), "AK", store, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(0))
+		Expect(store.puts).To(Equal(0))
+	})
+
 	It("requires a session for price history", func() {
 		c := newClient()
 		c.cfg.Session = ""
-		_, err := c.SyncPriceHistory(context.Background(), "AK", newStubPriceStore())
+		_, err := c.SyncPriceHistory(context.Background(), "AK", newStubPriceStore(), 31.5, true)
 		Expect(err).To(HaveOccurred())
 		Expect(calls).To(Equal(0))
 	})
@@ -174,7 +231,8 @@ var _ = Describe("Current price recency", func() {
 		Expect(store.Upsert(context.Background(), []repository.HistoricalPrice{
 			{Asset: "steam:730:AK", Timestamp: time.Now().UTC().Add(-time.Minute), Currency: "STEAM_1", Price: 30, Source: "steam_market"},
 		})).To(Succeed())
-		v, kind, ok := newClient(store).CurrentPrice(context.Background(), "AK")
+		v, kind, _, ok, err := newClient(store).CurrentPrice(context.Background(), "AK")
+		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
 		Expect(kind).To(Equal("steam_history"))
 		Expect(v).To(Equal(30.0))
@@ -188,7 +246,8 @@ var _ = Describe("Current price recency", func() {
 		})).To(Succeed())
 		c := newClient(store)
 		c.cfg.PriceTTL = time.Minute
-		v, kind, ok := c.CurrentPrice(context.Background(), "AK")
+		v, kind, _, ok, err := c.CurrentPrice(context.Background(), "AK")
+		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
 		Expect(kind).To(Equal("steam_median"))
 		Expect(v).To(BeNumerically("~", 31.28, 1e-9))

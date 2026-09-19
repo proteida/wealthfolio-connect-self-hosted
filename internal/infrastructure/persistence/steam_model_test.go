@@ -112,6 +112,8 @@ var _ = Describe("SteamAssetRepository", func() {
 		})).To(Succeed())
 
 		mock.ExpectBegin()
+		mock.ExpectQuery(rx(`FROM "steam_asset_acquisitions"`)).
+			WillReturnRows(sqlmock.NewRows([]string{"steam_id", "assetid", "market_hash_name", "acquired_at", "type", "reference", "cost_basis", "cost_currency", "match_method", "match_confidence"}))
 		mock.ExpectExec(rx(`INSERT INTO "steam_asset_acquisitions"`)).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectCommit()
@@ -136,6 +138,44 @@ var _ = Describe("SteamAssetRepository", func() {
 		Expect(got).To(HaveLen(1))
 		Expect(*got[0].CostBasis).To(BeNumerically("~", 23.41, 1e-9))
 		Expect(got[0].MatchConfidence).To(Equal("high"))
+		Expect(mock.ExpectationsWereMet()).To(Succeed())
+	})
+
+	It("joins current assets through complete snapshots only", func() { // The snapshots lookup must filter on complete, or an asset
+		// omitted by a truncated page would lose its acquisition join.
+		mock.ExpectQuery(`(?i)FROM "steam_snapshots".*complete`).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "steam_id", "taken_at", "complete"}).
+				AddRow([]driver.Value{"s9", "765", now, true}...))
+		mock.ExpectQuery(rx(`FROM "steam_snapshot_assets"`)).
+			WillReturnRows(sqlmock.NewRows([]string{"snapshot_id", "assetid", "classid", "instanceid", "market_hash_name", "amount"}).
+				AddRow([]driver.Value{"s9", "100", "1", "0", "AK", 1}...))
+		mock.ExpectQuery(rx(`FROM "steam_asset_acquisitions"`)).
+			WillReturnRows(sqlmock.NewRows([]string{"steam_id", "assetid", "market_hash_name", "acquired_at", "type", "reference", "cost_basis", "cost_currency", "match_method", "match_confidence"}).
+				AddRow([]driver.Value{"765", "100", "AK", now, "steam_market", "m1", 23.41, "USD", "inventory_history+market_history", "high"}...))
+		got, err := repo.CurrentAssets(ctx, "765")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(HaveLen(1))
+		Expect(got[0].MatchConfidence).To(Equal("high"))
+		Expect(mock.ExpectationsWereMet()).To(Succeed())
+	})
+
+	It("looks up acquisitions by asset IDs without a snapshot", func() {
+		mock.ExpectQuery(rx(`FROM "steam_asset_acquisitions"`)).
+			WillReturnRows(sqlmock.NewRows([]string{"steam_id", "assetid", "market_hash_name", "acquired_at", "type", "reference", "cost_basis", "cost_currency", "match_method", "match_confidence"}).
+				AddRow([]driver.Value{"765", "100", "AK", now, "steam_market", "m1", 23.41, "USD", "inventory_history+market_history", "high"}...))
+		got, err := repo.AcquisitionsForAssets(ctx, "765", []string{"100"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(HaveLen(1))
+		Expect(got[0].AssetID).To(Equal("100"))
+		Expect(got[0].Reference).To(Equal("m1"))
+		Expect(*got[0].CostBasis).To(BeNumerically("~", 23.41, 1e-9))
+		Expect(mock.ExpectationsWereMet()).To(Succeed())
+	})
+
+	It("skips the acquisition lookup for empty ID sets", func() {
+		got, err := repo.AcquisitionsForAssets(ctx, "765", nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(BeEmpty())
 		Expect(mock.ExpectationsWereMet()).To(Succeed())
 	})
 })

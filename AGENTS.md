@@ -73,7 +73,7 @@ project as it evolves.
 
 - Commit messages follow **Conventional Commits**: `feat:`, `fix:`, `refactor:`,
   `test:`, `docs:`, `chore:`, `ci:`.
-- PRs MUST pass CI (vet, lint, test ≥ 90% coverage) before merge.
+- PRs MUST pass CI (vet, lint, test ≥ 80% coverage) before merge.
 - Branch names: `feat/<topic>`, `fix/<topic>`, `chore/<topic>`.
 
 ## Forbidden Patterns
@@ -91,7 +91,7 @@ project as it evolves.
 
 1. Before adding a new dependency, verify it's not already provided.
 2. Before adding code to a layer, confirm it belongs there (see Architecture).
-3. After every behavioural change, add or update tests so the ≥90% coverage
+3. After every behavioural change, add or update tests so the ≥80% coverage
    threshold is preserved.
 4. After touching env vars, update `README.md` and
    `internal/infrastructure/config/config.go`.

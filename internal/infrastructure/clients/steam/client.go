@@ -63,13 +63,26 @@ type ClientConfig struct {
 	// Zero disables historical backfill; the operational default (5)
 	// comes from STEAM_HISTORY_BUDGET.
 	HistoryBudget int
-	// MinItemValueUSD drops new items valued below this USD total
-	// (quantity × price) from positions and activities. Items seen in a
-	// previous snapshot keep syncing (grandfathered); unpriced items are
-	// always kept. Zero disables the filter; the operational default (10)
-	// comes from STEAM_MIN_ITEM_VALUE_USD. The threshold is denominated
-	// in the price currency, USD by default.
+	// MinItemValueUSD drops stacks valued at or below this USD total
+	// from positions and activities; only stacks whose combined
+	// quantity × price (amounts aggregated by market name) sits strictly
+	// above the threshold are emitted. There is
+	// no grandfathering (a price drop hides the stack again) and no
+	// unpriced exception: stacks without a current or stored quote are
+	// excluded too, because unknown value proves nothing. Filtered items
+	// stay in the persisted inventory snapshot, so a later price rise
+	// re-admits them, and their stale activities are retracted on sync.
+	// Zero disables the filter (unpriced items sync as zero-price
+	// positions); the operational default (10) comes from
+	// STEAM_MIN_ITEM_VALUE_USD. The threshold is denominated in the price
+	// currency, USD by default.
 	MinItemValueUSD float64
+	// CacheNamespace isolates the shared Redis current-price cache between
+	// roles with different TTLs (sync vs public): entries are only ever
+	// read back by the role that wrote them, so a 24h public entry can
+	// never satisfy a 20m sync freshness check. Empty shares the default
+	// namespace; the public provider sets its own.
+	CacheNamespace string
 }
 
 func defaultClientConfig() ClientConfig {
@@ -97,6 +110,10 @@ type Client struct {
 	history repository.ActivityRepository
 	cursors repository.CursorRepository
 	prices  *appprices.Service
+	// lastPrice tracks the most recent priceoverview call so those
+	// abuse-sensitive reads can be spaced wider than other community
+	// calls (see priceOverviewSpacing).
+	lastPrice time.Time
 	// auth derives web cookies from the refresh token. Non-nil means the
 	// static session Cookie header stays off (the jar owns cookies).
 	auth *SteamAuthClient
@@ -108,8 +125,12 @@ type Client struct {
 	// backfills. Nil disables them.
 	priceHistory repository.PriceHistoryRepository
 
-	pendingCursor repository.SyncCursor
-	pendingDirty  bool
+	pendingCursors []repository.SyncCursor
+	pendingDirty   bool
+	// emptyUnconfirmed marks a complete empty inventory that must fail
+	// closed after recording: holdings stay untouched until a second
+	// consecutive observation confirms the wipe. Reset every Fetch.
+	emptyUnconfirmed bool
 	// priceFails counts consecutive market-price fetch failures. At
 	// priceFailBreaker the sync stops pricing and leaves the rest
 	// unvalued instead of burning minutes on a throttled endpoint.
@@ -124,6 +145,8 @@ const priceFailBreaker = 10
 func (c *Client) SetPriceService(p *appprices.Service) { c.prices = p }
 
 // New builds a Steam client. A nil HTTPDoer gets a 15s-timeout client.
+// Valuations are USD-only until FX conversion exists: a non-USD currency
+// is coerced to 1 (USD) so holdings are never mislabeled.
 func New(cfg ClientConfig, h HTTPDoer) *Client {
 	def := defaultClientConfig()
 	if cfg.CommunityBase == "" {
@@ -152,6 +175,9 @@ func New(cfg ClientConfig, h HTTPDoer) *Client {
 	}
 	if cfg.Currency <= 0 {
 		cfg.Currency = def.Currency
+	}
+	if cfg.Currency != 1 {
+		cfg.Currency = 1
 	}
 	if h == nil {
 		// Fresh connections per request: Steam's abuse-sensitive
@@ -231,7 +257,9 @@ func (c *Client) SnapshotCommitted() {
 	if c.cursors == nil {
 		return
 	}
-	_ = c.cursors.Set(context.Background(), c.pendingCursor) //nolint:errcheck // replay-safe
+	for _, cur := range c.pendingCursors {
+		_ = c.cursors.Set(context.Background(), cur) //nolint:errcheck // replay-safe
+	}
 }
 
 // steamErr reports endpoint failures without credentials: paths and status
@@ -263,6 +291,34 @@ func (c *Client) throttle(ctx context.Context) error {
 			}
 		}
 		c.lastReq = time.Now()
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// throttlePrice spaces priceoverview reads by priceOverviewSpacing times
+// the community MinInterval. It shares the request mutex with throttle
+// (never nested inside it) and refreshes lastReq too, so the following
+// community call keeps its normal spacing from this one.
+func (c *Client) throttlePrice(ctx context.Context) error {
+	select {
+	case c.mu <- struct{}{}:
+		defer func() { <-c.mu }()
+		now := time.Now()
+		wait := c.cfg.MinInterval - now.Sub(c.lastReq)
+		if gap := time.Duration(priceOverviewSpacing)*c.cfg.MinInterval - now.Sub(c.lastPrice); gap > wait {
+			wait = gap
+		}
+		if wait > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+		c.lastReq = time.Now()
+		c.lastPrice = c.lastReq
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

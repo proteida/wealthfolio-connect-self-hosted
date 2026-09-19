@@ -59,7 +59,7 @@ var _ = Describe("Config.LoadFrom", func() {
 		cfg, err := config.LoadFrom(mapLoader(base))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfg.Steam.APIKey).To(BeEmpty())
-		base["STEAM_ID"] = "76561198000000000"
+		base["STEAM_ID"] = "76561199495663064"
 		base["STEAM_API_KEY"] = "k"
 		base["STEAM_SESSION"] = "sessionid=abc"
 		base["STEAM_REFRESH_TOKEN"] = "eyJhbGciOiJFUzI1NiJ9.payload.sig"
@@ -67,7 +67,7 @@ var _ = Describe("Config.LoadFrom", func() {
 		base["STEAM_CURRENCY"] = "3"
 		cfg, err = config.LoadFrom(mapLoader(base))
 		Expect(err).NotTo(HaveOccurred())
-		Expect(cfg.Steam.SteamID).To(Equal("76561198000000000"))
+		Expect(cfg.Steam.SteamID).To(Equal("76561199495663064"))
 		Expect(cfg.Steam.APIKey).To(Equal("k"))
 		Expect(cfg.Steam.Session).To(Equal("sessionid=abc"))
 		Expect(cfg.Steam.RefreshToken).To(Equal("eyJhbGciOiJFUzI1NiJ9.payload.sig"))

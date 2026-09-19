@@ -155,12 +155,18 @@ type SteamConfig struct {
 	RefreshToken string
 	// PriceTTL bounds caching of current market prices.
 	PriceTTL time.Duration
-	// Currency is the Steam wallet currency code for market prices (1 = USD).
+	// Currency is the Steam wallet currency code for market prices.
+	// Steam prices are USD-only: the steam client coerces any value to
+	// 1 (USD). STEAM_CURRENCY is retained for backwards compatibility
+	// but has no effect beyond the parsed value.
 	Currency int
 	// HistoryBudget caps price-history backfills per sync (0 disables).
 	HistoryBudget int
-	// MinItemValueUSD drops new items below this total from positions and
-	// activities, with grandfathering for previously synced items (0 off).
+	// MinItemValueUSD drops stacks at or below this combined quantity ×
+	// price total (amounts aggregated by market name) from Steam positions
+	// and activities (only stack totals strictly above the threshold sync;
+	// unpriced stacks are excluded, filtered items stay in the inventory
+	// snapshot so a price rise re-admits them). Zero disables the filter.
 	MinItemValueUSD float64
 }
 

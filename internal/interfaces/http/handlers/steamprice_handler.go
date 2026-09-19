@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,58 +10,21 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	appprices "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/prices"
+	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/steamprices"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/repository"
-	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/steam"
-	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/config"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/interfaces/http/middleware"
 )
 
-// SteamPriceHandler serves CS2 market prices by market_hash_name. Current
-// quotes resolve through the shared Redis cache (provider fetch on miss,
-// cached 24h) backed by the database store; history resolves from the
-// database store populated by sync backfills. Only items the system
-// already tracks (a stored price row from sync) are served: unknown names
-// are rejected without any Steam call so probing random skins cannot
-// burn the Steam rate limit (429).
+// SteamPriceHandler serves CS2 market prices by market_hash_name. All
+// orchestration (tracking gate, TTL, timestamps) lives in the application
+// service; this handler only translates request → service → response.
 type SteamPriceHandler struct {
-	client  *steam.Client
-	history repository.PriceHistoryRepository
+	prices *steamprices.Service
 }
 
-// priceTTL is how long a fetched current quote is trusted without a fresh
-// provider read (Redis TTL and DB-recency threshold). 24h keeps public
-// reads off the throttled priceoverview endpoint; the sync loop keeps its
-// own shorter TTL for freshness.
-const steamPublicPriceTTL = 24 * time.Hour
-
-// NewSteamPriceHandler builds the handler with a public Steam client: the
-// priceoverview endpoint needs no credentials, and the configured session
-// (if any) extends coverage to authenticated history. Fetched current
-// quotes are remembered through the shared history store for 24h.
-func NewSteamPriceHandler(cfg *config.Config, prices *appprices.Service, history repository.PriceHistoryRepository) *SteamPriceHandler {
-	c := steam.New(steam.ClientConfig{
-		SteamID:         cfg.Steam.SteamID,
-		Session:         cfg.Steam.Session,
-		RefreshToken:    cfg.Steam.RefreshToken,
-		PriceTTL:        steamPublicPriceTTL,
-		Currency:        cfg.Steam.Currency,
-		HistoryBudget:   0,
-		MinItemValueUSD: 0,
-	}, nil)
-	if prices != nil {
-		c.SetPriceService(prices)
-	}
-	c.SetPriceHistoryStore(history)
-	return &SteamPriceHandler{client: c, history: history}
-}
-
-// RegisterPublicAPIRoutes mounts the steam price paths. Market prices are
-// public data with no account scope, so these stay reachable without a
-// Bearer token (like subscription plans).
-func (h *SteamPriceHandler) RegisterPublicAPIRoutes(r chi.Router) {
-	r.Get("/steam/prices/current", h.GetCurrent)
-	r.Get("/steam/prices/history", h.GetHistory)
+// NewSteamPriceHandler builds the handler around the application service.
+func NewSteamPriceHandler(prices *steamprices.Service) *SteamPriceHandler {
+	return &SteamPriceHandler{prices: prices}
 }
 
 type steamCurrentPriceDTO struct {
@@ -73,36 +37,47 @@ type steamCurrentPriceDTO struct {
 	Date           string    `json:"date"`
 }
 
+// RegisterPublicAPIRoutes mounts the steam price paths. Market prices are
+// public data with no account scope, so these stay reachable without a
+// Bearer token (like subscription plans).
+func (h *SteamPriceHandler) RegisterPublicAPIRoutes(r chi.Router) {
+	r.Get("/steam/prices/current", h.GetCurrent)
+	r.Get("/steam/prices/history", h.GetHistory)
+}
+
 // GetCurrent returns the current Steam market price for ?name=. Names
-// never recorded by the system (no stored price row from sync) are
-// rejected without any Steam call to protect the rate limit.
+// never recorded by the system are rejected without any Steam call.
 func (h *SteamPriceHandler) GetCurrent(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
-	if name == "" {
+	if strings.TrimSpace(name) == "" {
 		middleware.WriteError(w, http.StatusBadRequest, "invalid_request", "MISSING_NAME", "name query parameter is required")
 		return
 	}
-	if h.history != nil {
-		asset, curr := steam.PriceAssetKey(name, h.client.Currency())
-		if _, err := h.history.Get(r.Context(), asset, curr, time.Now().UTC()); err != nil {
-			if isPriceNotFound(err) {
-				middleware.WriteError(w, http.StatusNotFound, "not_found", "ITEM_NOT_TRACKED", "item not tracked; sync inventory first")
-				return
-			}
+	q, err := h.prices.GetCurrent(r.Context(), name)
+	if err != nil {
+		if errors.Is(err, steamprices.ErrNotTracked) {
+			middleware.WriteError(w, http.StatusNotFound, "not_found", "ITEM_NOT_TRACKED", "item not tracked; sync inventory first")
+			return
+		}
+		if errors.Is(err, steamprices.ErrUpstream) {
+			middleware.WriteError(w, http.StatusBadGateway, "upstream", "PRICE_UPSTREAM_FAILED", "steam market temporarily unavailable")
+			return
+		}
+		if errors.Is(err, repository.ErrNotFound) || strings.Contains(err.Error(), "not found") {
+			middleware.WriteError(w, http.StatusNotFound, "not_found", "PRICE_NOT_FOUND", "no current price for "+name)
+			return
+		}
+		if strings.Contains(err.Error(), "history lookup") {
 			middleware.WriteError(w, http.StatusInternalServerError, "internal", "HISTORY_READ_FAILED", "history lookup failed")
 			return
 		}
-	}
-	price, priceType, ok := h.client.CurrentPrice(r.Context(), name)
-	if !ok {
 		middleware.WriteError(w, http.StatusNotFound, "not_found", "PRICE_NOT_FOUND", "no current price for "+name)
 		return
 	}
-	now := time.Now().UTC()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(steamCurrentPriceDTO{
-		MarketHashName: name, Price: price, PriceType: priceType, Currency: "USD",
-		Timestamp: now, TimestampUnix: now.Unix(), Date: now.Format("2006-01-02"),
+		MarketHashName: q.MarketHashName, Price: q.Price, PriceType: q.PriceType, Currency: q.Currency,
+		Timestamp: q.Timestamp, TimestampUnix: q.Timestamp.Unix(), Date: q.Timestamp.Format("2006-01-02"),
 	})
 }
 
@@ -125,7 +100,7 @@ type steamHistoryDTO struct {
 // or a calendar date (2025-05-01, midnight UTC).
 func (h *SteamPriceHandler) GetHistory(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
-	if name == "" {
+	if strings.TrimSpace(name) == "" {
 		middleware.WriteError(w, http.StatusBadRequest, "invalid_request", "MISSING_NAME", "name query parameter is required")
 		return
 	}
@@ -147,14 +122,13 @@ func (h *SteamPriceHandler) GetHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		to = t
 	}
-	asset, curr := steam.PriceAssetKey(name, h.client.Currency())
-	rows, err := h.history.List(r.Context(), asset, curr, from, to)
+	points, curr, err := h.prices.GetHistory(r.Context(), name, from, to)
 	if err != nil {
 		middleware.WriteError(w, http.StatusInternalServerError, "internal", "HISTORY_READ_FAILED", "history lookup failed")
 		return
 	}
 	out := steamHistoryDTO{MarketHashName: name, Currency: curr, Points: []steamPricePointDTO{}}
-	for _, p := range rows {
+	for _, p := range points {
 		ts := p.Timestamp.UTC()
 		out.Points = append(out.Points, steamPricePointDTO{
 			Timestamp: ts, TimestampUnix: ts.Unix(), Date: ts.Format("2006-01-02"), Price: p.Price,
@@ -181,10 +155,4 @@ func parseTimeBound(v string) (time.Time, error) {
 		return t.UTC(), nil
 	}
 	return time.Time{}, strconv.ErrSyntax
-}
-
-// isPriceNotFound reports a missing price row (unknown item) as opposed
-// to a store failure.
-func isPriceNotFound(err error) bool {
-	return err != nil && (err == repository.ErrNotFound || strings.Contains(err.Error(), "not found"))
 }

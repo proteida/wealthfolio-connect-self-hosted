@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	appprices "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/prices"
+	steamprices "github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/application/steamprices"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/domain/repository"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/cache"
 	"github.com/wealthfolio/wealthfolio-connect-self-hosted/internal/infrastructure/clients/steam"
@@ -65,6 +67,16 @@ func (f *fakePriceHistory) Upsert(_ context.Context, ps []repository.HistoricalP
 	return nil
 }
 
+// failingProvider is a steamprices.Provider whose upstream is down.
+type failingProvider struct{}
+
+func (failingProvider) Currency() int { return 1 }
+func (failingProvider) CurrentPrice(_ context.Context, _ string) (float64, string, time.Time, bool, error) {
+	return 0, "", time.Time{}, false, errUpstream()
+}
+
+func errUpstream() error { return errors.New("steam transient: http 429") }
+
 var _ = Describe("Steam price endpoints", func() {
 	var (
 		srv     *httptest.Server
@@ -85,10 +97,12 @@ var _ = Describe("Steam price endpoints", func() {
 		svc := appprices.NewService(nil, cache.NewCurrentPriceCache(&config.Config{RedisAddr: msrv.Addr()}))
 		c := steam.New(steam.ClientConfig{SteamID: "1", PriceTTL: time.Hour, Currency: 1, CommunityBase: srv.URL}, srv.Client())
 		c.SetPriceService(svc)
-		h = &SteamPriceHandler{client: c, history: &fakePriceHistory{rows: []repository.HistoricalPrice{
+		hist := &fakePriceHistory{rows: []repository.HistoricalPrice{
 			{Asset: "steam:730:AK", Timestamp: time.Date(2025, 5, 8, 0, 0, 0, 0, time.UTC), Currency: "STEAM_1", Price: 30, Source: "steam_market"},
 			{Asset: "steam:730:AK-47 | REDLINE", Timestamp: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), Currency: "STEAM_1", Price: 1, Source: "steam_market"},
-		}}}
+		}}
+		c.SetPriceHistoryStore(hist)
+		h = NewSteamPriceHandler(steamprices.NewService(hist, c))
 		r = chi.NewRouter()
 		h.RegisterPublicAPIRoutes(r)
 	})
@@ -133,6 +147,8 @@ var _ = Describe("Steam price endpoints", func() {
 		var out map[string]any
 		Expect(json.Unmarshal(rec.Body.Bytes(), &out)).To(Succeed())
 		Expect(out["points"]).To(HaveLen(1))
+		// Storage stays namespaced (STEAM_1); the API exposes USD.
+		Expect(out["currency"]).To(Equal("USD"))
 	})
 
 	It("rejects bad date bounds", func() {
@@ -166,5 +182,34 @@ var _ = Describe("Steam price endpoints", func() {
 			r.ServeHTTP(rec, req)
 			Expect(rec.Code).To(Equal(http.StatusOK))
 		}
+	})
+
+	It("reports fresh observation time for refetched quotes", func() {
+		handler = func(w http.ResponseWriter, req *http.Request) {
+			writePriceJSON(w, map[string]any{"success": true, "median_price": "$31.28", "volume": "5"})
+		}
+		req := httptest.NewRequest(http.MethodGet, "/steam/prices/current?name="+urlQueryEscape("AK-47 | Redline"), nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		var out map[string]any
+		Expect(json.Unmarshal(rec.Body.Bytes(), &out)).To(Succeed())
+		ts, err := time.Parse(time.RFC3339, out["timestamp"].(string))
+		Expect(err).NotTo(HaveOccurred())
+		// The stored row is from 2020: a live refetch must not reuse it.
+		Expect(time.Since(ts)).To(BeNumerically("<", 5*time.Minute))
+	})
+
+	It("maps upstream failures to 502, not 404", func() {
+		hist := &fakePriceHistory{rows: []repository.HistoricalPrice{
+			{Asset: "steam:730:AK", Timestamp: time.Now().UTC().Add(-time.Minute), Currency: "STEAM_1", Price: 30, Source: "steam_quote"},
+		}}
+		h := NewSteamPriceHandler(steamprices.NewService(hist, failingProvider{}))
+		r := chi.NewRouter()
+		h.RegisterPublicAPIRoutes(r)
+		req := httptest.NewRequest(http.MethodGet, "/steam/prices/current?name=AK", nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusBadGateway))
 	})
 })

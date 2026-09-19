@@ -13,6 +13,9 @@ import (
 )
 
 // InventoryItem is one owned CS2 item with its market description joined.
+// HasDescription reports whether a description row was found for the
+// asset: false means the market name/flags are absent because the join
+// missed, not because the item is unmarketable.
 type InventoryItem struct {
 	AssetID        string
 	ClassID        string
@@ -24,6 +27,7 @@ type InventoryItem struct {
 	Name           string
 	Type           string
 	Tags           map[string]string // category -> internal_name
+	HasDescription bool
 }
 
 // rawInventory mirrors the community inventory envelope. Amounts arrive as
@@ -102,12 +106,24 @@ func truthy(v any) bool {
 	}
 }
 
-func descKey(classID, instanceID string) string { return classID + "\x00" + instanceID }
+func descKey(classID, instanceID string) string { return classID + "\x00" + normInstance(instanceID) }
 
-// joinInventory binds assets to descriptions by classid+instanceid.
-// Descriptions without assets and assets without descriptions are both
-// kept: the former may describe stragglers from a partial page, the latter
-// stay visible with empty market names instead of vanishing.
+// normInstance canonicalizes Steam's fungible-instance spellings: generic
+// items (notably containers such as the Gamma 2 Case) arrive with
+// instanceid "0" on one side of the payload and "" on the other. Both mean
+// "no instance" and must join to the same description.
+func normInstance(instanceID string) string {
+	if instanceID == "" {
+		return "0"
+	}
+	return instanceID
+}
+
+// joinInventory binds assets to descriptions by classid+instanceid, with
+// "" and "0" instanceids treated as equivalent. Descriptions without assets
+// and assets without descriptions are both kept: the former may describe
+// stragglers from a partial page, the latter stay visible with empty market
+// names instead of vanishing.
 func joinInventory(page inventoryPage) []InventoryItem {
 	byKey := make(map[string]rawDescription, len(page.Descriptions))
 	for _, d := range page.Descriptions {
@@ -123,6 +139,7 @@ func joinInventory(page inventoryPage) []InventoryItem {
 			Amount:     intVal(a.Amount),
 		}
 		if d, ok := byKey[descKey(classID, instanceID)]; ok {
+			it.HasDescription = true
 			it.MarketHashName = d.MarketHashName
 			it.Marketable = d.Marketable != 0
 			it.Tradable = d.Tradable != 0
@@ -141,12 +158,21 @@ func joinInventory(page inventoryPage) []InventoryItem {
 }
 
 // fetchInventory pulls every inventory page for the configured steamid,
-// following more_items/last_assetid. It returns partial results with an
-// error when a page fails mid-way so callers can mark the snapshot
-// partial instead of discarding good pages.
+// following more_items/last_assetid. Descriptions are joined globally after
+// all pages land: Steam may split an asset and its description across page
+// boundaries, and per-page joins would leave such assets nameless.
+// Duplicate assetids across overlapping pages are collapsed. It returns
+// partial results with an error when a page fails mid-way so callers can
+// mark the snapshot partial instead of discarding good pages.
 func (c *Client) fetchInventory(ctx context.Context) ([]InventoryItem, bool, error) {
-	var all []InventoryItem
+	var rawAssets []rawAsset
+	var rawDescs []rawDescription
+	seen := map[string]bool{}
+	totalCount := 0
 	start := ""
+	pages := 0
+	complete := false
+	var pageErr error
 	for page := 0; page < c.cfg.MaxPages; page++ {
 		q := url.Values{"l": {"english"}, "count": {"2000"}}
 		if start != "" {
@@ -154,21 +180,86 @@ func (c *Client) fetchInventory(ctx context.Context) ([]InventoryItem, bool, err
 		}
 		var env inventoryPage
 		if err := c.getCommunity(ctx, "/inventory/"+c.cfg.SteamID+"/730/2", q, &env); err != nil {
-			return all, false, err
+			pageErr = err
+			break
 		}
-		all = append(all, joinInventory(env)...)
+		if !truthy(env.Success) {
+			pageErr = steamErr("inventory", fmt.Errorf("success=false"))
+			break
+		}
+		pages++
+		if env.TotalCount > totalCount {
+			totalCount = env.TotalCount
+		}
+		for _, a := range env.Assets {
+			id := strVal(a.AssetID)
+			if id != "" && seen[id] {
+				continue
+			}
+			if id != "" {
+				seen[id] = true
+			}
+			rawAssets = append(rawAssets, a)
+		}
+		rawDescs = append(rawDescs, env.Descriptions...)
 		if !truthy(env.MoreItems) {
-			return all, true, nil
+			complete = true
+			break
 		}
 		next := strVal(env.LastAssetID)
 		if next == "" || next == start {
 			// The cursor stalled: more data is claimed but no progress is
 			// possible. Keep what we have and mark partial.
-			return all, false, nil
+			break
 		}
 		start = next
 	}
-	return all, false, nil
+	all := joinInventory(inventoryPage{Assets: rawAssets, Descriptions: rawDescs})
+	c.logInventoryFetch(pages, totalCount, len(rawAssets), all)
+	if pageErr != nil {
+		return all, false, pageErr
+	}
+	if !complete {
+		return all, false, nil
+	}
+	if totalCount > 0 && len(rawAssets) < totalCount {
+		// The server claims more items than it delivered with no cursor to
+		// follow: treat as truncated, never as whole.
+		c.log.Warn().
+			Int("total_count", totalCount).
+			Int("received", len(rawAssets)).
+			Int("pages", pages).
+			Msg("steam inventory truncated: server total exceeds delivered assets")
+		return all, false, nil
+	}
+	return all, true, nil
+}
+
+// logInventoryFetch records pagination counts and join health. Only
+// assets with no description row count as join misses: described items
+// with an empty market name are genuinely unmarketable, not missing.
+// Asset and class identifiers plus market names only: never cookies,
+// keys or bodies.
+func (c *Client) logInventoryFetch(pages, totalCount, raw int, joined []InventoryItem) {
+	missCount := 0
+	sample := make([]string, 0, 8)
+	for _, it := range joined {
+		if it.HasDescription {
+			continue
+		}
+		missCount++
+		if len(sample) < 8 {
+			sample = append(sample, it.AssetID+"/"+it.ClassID+"/"+it.InstanceID)
+		}
+	}
+	c.log.Info().
+		Int("pages", pages).
+		Int("total_count", totalCount).
+		Int("assets", raw).
+		Int("joined", len(joined)).
+		Int("join_misses", missCount).
+		Strs("miss_sample", sample).
+		Msg("steam inventory fetched")
 }
 
 // getCommunity performs an authenticated-when-configured GET against the
@@ -240,7 +331,7 @@ func (c *Client) getOnce(ctx context.Context, rawURL string, community bool, int
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return true, 0, steamErr("http", err)
+		return true, 0, steamErr("http", sanitizeHTTPError(err))
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))

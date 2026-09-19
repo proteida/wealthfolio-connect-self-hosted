@@ -64,7 +64,7 @@ var _ = Describe("Inventory history", func() {
 			Expect(r.URL.Query().Get("cursor[s]")).To(Equal("abc"))
 			writeJSON(w, page("", nil))
 		}
-		evs, gotDescs, complete, err := newClient().fetchHistory(context.Background(), 0)
+		evs, gotDescs, complete, _, err := newClient().fetchHistory(context.Background(), nil, time.Time{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(complete).To(BeTrue())
 		Expect(evs).To(HaveLen(2))
@@ -74,14 +74,75 @@ var _ = Describe("Inventory history", func() {
 		Expect(gotDescs["1_0"].MarketHashName).To(Equal("AK-47 | Redline (Field-Tested)"))
 	})
 
-	It("sends start_time when importing older ranges", func() {
+	It("starts newest without start_time anchors", func() {
 		handler = func(w http.ResponseWriter, r *http.Request) {
-			Expect(r.URL.Query().Get("start_time")).To(Equal("1700000000"))
+			Expect(r.URL.Query().Get("start_time")).To(BeEmpty())
 			writeJSON(w, page("", nil))
 		}
-		_, _, complete, err := newClient().fetchHistory(context.Background(), 1700000000)
+		_, _, complete, resume, err := newClient().fetchHistory(context.Background(), nil, time.Time{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(complete).To(BeTrue())
+		Expect(resume).To(BeNil())
+	})
+
+	It("rejects unsuccessful envelopes as incomplete", func() {
+		handler = func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, map[string]any{"success": false, "html": "", "descriptions": map[string]any{}})
+		}
+		_, _, complete, _, err := newClient().fetchHistory(context.Background(), nil, time.Time{})
+		Expect(err).To(HaveOccurred())
+		Expect(complete).To(BeFalse())
+	})
+
+	It("stops at the watermark on fresh walks", func() {
+		// Watermark sits between the two rows: the walk imports the
+		// page and stops complete without requesting older pages.
+		calls := 0
+		handler = func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			writeJSON(w, page(
+				row("8 May, 2025 1:00pm", "Received + New", `data-classid="1" data-instanceid="0" data-amount="1"`)+
+					row("1 May, 2025 1:00pm", "Received + Old", `data-classid="1" data-instanceid="0" data-amount="1"`),
+				map[string]any{"time": "1", "time_frac": "0", "s": "x"}))
+		}
+		watermark := time.Date(2025, 5, 4, 0, 0, 0, 0, time.UTC)
+		evs, _, complete, resume, err := newClient().fetchHistory(context.Background(), nil, watermark)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(complete).To(BeTrue())
+		Expect(resume).To(BeNil())
+		Expect(evs).To(HaveLen(2))
+		Expect(calls).To(Equal(1))
+	})
+
+	It("resumes capped walks from the provider cursor", func() {
+		calls := 0
+		handler = func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			writeJSON(w, page(
+				row("8 May, 2025 1:00pm", "Received + AK", `data-classid="1" data-instanceid="0" data-amount="1"`),
+				map[string]any{"time": "1", "time_frac": "0", "s": "x"}))
+		}
+		c := newClient()
+		c.cfg.MaxPages = 1
+		_, _, complete, resume, err := c.fetchHistory(context.Background(), nil, time.Time{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(complete).To(BeFalse())
+		Expect(resume).NotTo(BeNil())
+		// The resumed walk picks up where the cap stopped, ignoring the
+		// watermark that the fresh walk would have stopped at.
+		calls = 0
+		handler = func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			Expect(r.URL.Query().Get("cursor[time]")).To(Equal("1"))
+			writeJSON(w, page(
+				row("8 May, 2025 1:00pm", "Received + AK", `data-classid="1" data-instanceid="0" data-amount="1"`),
+				map[string]any{"time": "1", "time_frac": "0", "s": "x"}))
+		}
+		_, _, complete, resume2, err := c.fetchHistory(context.Background(), resume, time.Now().UTC())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(calls).To(Equal(1))
+		Expect(complete).To(BeFalse())
+		Expect(resume2).NotTo(BeNil())
 	})
 
 	It("dedupes repeated rows", func() {
@@ -89,7 +150,7 @@ var _ = Describe("Inventory history", func() {
 		handler = func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, page(one+one, nil))
 		}
-		evs, _, complete, err := newClient().fetchHistory(context.Background(), 0)
+		evs, _, complete, _, err := newClient().fetchHistory(context.Background(), nil, time.Time{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(complete).To(BeTrue())
 		Expect(evs).To(HaveLen(1))
@@ -103,7 +164,7 @@ var _ = Describe("Inventory history", func() {
 		}
 		// Same cursor twice would loop forever; the second identical
 		// cursor stops the walk as incomplete.
-		evs, _, complete, err := newClient().fetchHistory(context.Background(), 0)
+		evs, _, complete, _, err := newClient().fetchHistory(context.Background(), nil, time.Time{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(complete).To(BeFalse())
 		Expect(evs).NotTo(BeEmpty())

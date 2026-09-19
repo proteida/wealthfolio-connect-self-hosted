@@ -1,6 +1,7 @@
 package steam
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -60,4 +61,17 @@ func redactValue(s string) string {
 		return ""
 	}
 	return "[redacted]"
+}
+
+// sanitizeHTTPError strips secret query values from url.Error so network
+// failures (which commonly embed the full URL, including STEAM_API_KEY)
+// can be wrapped and logged safely.
+func sanitizeHTTPError(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		cp := *ue
+		cp.URL = redactURL(ue.URL)
+		return &cp
+	}
+	return err
 }

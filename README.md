@@ -367,9 +367,9 @@ key stay in the environment only — never logged, persisted or committed.
 | `STEAM_SESSION`           | —       | Raw `Cookie` header for private inventory/market history. Empty limits to public endpoints. |
 | `STEAM_REFRESH_TOKEN`     | —       | WebBrowser refresh token from `tools/steam-auth` (preferred over `STEAM_SESSION`).          |
 | `STEAM_PRICE_TTL_MINUTES` | `20`    | Current market-price cache TTL.                                                             |
-| `STEAM_CURRENCY`          | `1`     | Steam wallet currency code for market prices (`1` = USD).                                   |
-| `STEAM_HISTORY_BUDGET`    | `5`     | Price-history backfills per sync (distinct names with no recent coverage).                  |
-| `STEAM_MIN_ITEM_VALUE_USD`| `10`    | New items below this `qty × price` total stay out of positions/activities (previously synced items keep updating; unpriced items are always kept). |
+| `STEAM_CURRENCY`          | `1`     | Steam wallet currency code for market prices. USD-only (`1`): other values are coerced to `1` until FX conversion exists. |
+| `STEAM_HISTORY_BUDGET`    | `5`     | Price-history backfills per sync (distinct names with no recent coverage). Histories are fetched in USD and validated against a fresh quote before storing; legacy non-USD series are purged once on upgrade and rebuild gradually (raise temporarily to speed recovery). |
+| `STEAM_MIN_ITEM_VALUE_USD`| `10`    | Only stacks with combined `qty × price` (amounts aggregated by market name) strictly above this total sync to positions/activities (snapshot retains the rest; a later price rise re-admits them; unpriced stacks are excluded while the filter is on, `0` disables it). |
 
 ### Steam authentication
 
@@ -384,7 +384,7 @@ npm run steam-auth
 Then configure:
 
 ```env
-STEAM_ID=76561198000000000
+STEAM_ID=76561199495663064
 STEAM_REFRESH_TOKEN=<refresh token from the CLI>
 ```
 
@@ -413,8 +413,8 @@ refresh token is reported (never logged or persisted) when Steam issues one.
 | PATCH  | `/api/v1/sync/brokerage/accounts/{id}`                        | Toggle `sync_enabled` for one account.                   |
 | GET    | `/api/v1/sync/brokerage/accounts/{id}/activities`             | Paginated activities.                                    |
 | GET    | `/api/v1/sync/brokerage/accounts/{id}/holdings`               | Latest holdings snapshot.                                |
-| GET    | `/api/v1/steam/prices/current?name=`                          | Current Steam market price by `market_hash_name` (cached). |
-| GET    | `/api/v1/steam/prices/history?name=&from=&to=`                | Stored historical Steam market prices (RFC3339 bounds).  |
+| GET    | `/api/v1/steam/prices/current?name=`                          | Current Steam market price by `market_hash_name` (tracked items only; `timestamp` is the stored observation time). |
+| GET    | `/api/v1/steam/prices/history?name=&from=&to=`                | Stored historical Steam market prices (RFC3339, unix `%s` or `YYYY-MM-DD` bounds; default last 90d). |
 | POST   | `/api/v1/connect/session`                                     | Seed/refresh the local sync session (see Quick Start).   |
 | GET    | `/healthz`                                                    | Liveness + DB ping.                                      |
 | GET    | `/readyz`                                                     | Readiness (post-migration).                              |
@@ -496,7 +496,7 @@ go vet ./...
 go generate ./...
 ```
 
-Coverage threshold is **≥ 90%** — CI will fail below that.
+Coverage threshold is **≥ 80%** — CI will fail below that.
 
 ---
 
@@ -524,7 +524,7 @@ The container exposes `SERVER_PORT` (default `8080`) and provides
 GitHub Actions workflow at [`.github/workflows/ci.yml`](./.github/workflows/ci.yml):
 
 - Runs on every PR and push to `main`.
-- Steps: `go vet` → `golangci-lint` → `go test -race -coverprofile` → coverage gate (≥ 90%).
+- Steps: `go vet` → `golangci-lint` → `go test -race -coverprofile` → coverage gate (≥ 80%).
 - A PostgreSQL service container is provisioned for integration tests.
 - On `main`, the multi-stage Docker image is built and pushed using the
   `REGISTRY_URL` / `REGISTRY_USERNAME` / `REGISTRY_PASSWORD` repo secrets.

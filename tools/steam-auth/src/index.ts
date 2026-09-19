@@ -12,11 +12,13 @@
 
 import * as fs from 'node:fs';
 import * as readline from 'node:readline';
+import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { EAuthTokenPlatformType, LoginSession } from 'steam-session';
 
-type Args = { json: boolean; output?: string; code?: string; username?: string };
+export type Args = { json: boolean; output?: string; code?: string; username?: string };
 
-function parseArgs(argv: string[]): Args {
+export function parseArgs(argv: string[]): Args {
 	const out: Args = { json: false };
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
@@ -30,25 +32,54 @@ function parseArgs(argv: string[]): Args {
 }
 
 function ask(rl: readline.Interface, q: string): Promise<string> {
-	return new Promise((resolve) => rl.question(q, resolve));
+	return new Promise((resolve) => {
+		let done = false;
+		const finish = (v: string) => {
+			if (!done) {
+				done = true;
+				resolve(v);
+			}
+		};
+		// EOF (closed pipe, /dev/null) resolves empty instead of hanging
+		// or letting the process exit 0 with no verdict.
+		rl.question(q, (ans) => finish(ans ?? ''));
+		rl.once('close', () => finish(''));
+	});
+}
+
+// promptOutput routes interactive prompts to stderr in --json mode so
+// stdout carries only the machine-readable payload.
+export function promptOutput(json: boolean): NodeJS.WriteStream {
+	return (json ? process.stderr : process.stdout) as NodeJS.WriteStream;
 }
 
 // askSecret reads a line without echoing it. The value lives in memory
-// only for the login call and is never written anywhere.
-function askSecret(prompt: string): Promise<string> {
+// only for the login call and is never written anywhere. Prompts go to
+// out (stderr in --json mode) so stdout stays machine-readable.
+function askSecret(prompt: string, out: NodeJS.WriteStream = process.stdout): Promise<string> {
 	return new Promise((resolve) => {
-		const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+		const rl = readline.createInterface({ input: process.stdin, output: out });
 		const stdin = process.stdin;
+		const finish = (v: string) => {
+			stdin.removeListener('data', onData);
+			stdin.removeListener('end', onEnd);
+			stdin.setRawMode?.(false);
+			stdin.pause();
+			out.write('\n');
+			rl.close();
+			resolve(v);
+		};
+		const onEnd = () => finish(buf.trim());
 		const onData = (ch: Buffer) => {
 			const s = ch.toString('utf8');
 			if (s === '\n' || s === '\r' || s === '\u0004') {
+				finish(buf.trim());
+			} else if (s === '\u0003') {
 				stdin.removeListener('data', onData);
+				stdin.removeListener('end', onEnd);
 				stdin.setRawMode?.(false);
 				stdin.pause();
-				process.stdout.write('\n');
 				rl.close();
-				resolve(buf.trim());
-			} else if (s === '\u0003') {
 				process.exit(130);
 			} else if (s === '\u007f') {
 				buf = buf.slice(0, -1);
@@ -57,10 +88,13 @@ function askSecret(prompt: string): Promise<string> {
 			}
 		};
 		let buf = '';
-		process.stdout.write(prompt);
+		out.write(prompt);
 		stdin.setRawMode?.(true);
 		stdin.resume();
 		stdin.on('data', onData);
+		// EOF without Enter fails closed instead of hanging on a secret
+		// prompt forever.
+		stdin.once('end', onEnd);
 	});
 }
 
@@ -70,7 +104,8 @@ async function main(): Promise<void> {
 		if (!args.json) console.log(msg);
 	};
 
-	const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+	const out = promptOutput(args.json);
+	const rl = readline.createInterface({ input: process.stdin, output: out });
 	const username = args.username ?? (await ask(rl, 'Steam username: ')).trim();
 	rl.close();
 	if (!username) {
@@ -78,7 +113,7 @@ async function main(): Promise<void> {
 		process.exit(2);
 	}
 	// Read from TTY only; the password is used once and never stored.
-	const password = await askSecret('Steam password (hidden): ');
+	const password = await askSecret('Steam password (hidden): ', out);
 	if (!password) {
 		console.error('password is required');
 		process.exit(2);
@@ -120,7 +155,7 @@ async function main(): Promise<void> {
 				const needsCode = guards.some((g) => /code/i.test(String(g)));
 				const needsApproval = guards.some((g) => /confirmation/i.test(String(g)));
 				if (needsCode && !args.code) {
-					const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
+					const rl2 = readline.createInterface({ input: process.stdin, output: promptOutput(args.json) });
 					const code = (await ask(rl2, 'Steam Guard code (email or app): ')).trim();
 					rl2.close();
 					if (code) await session.submitSteamGuardCode(code);
@@ -169,7 +204,19 @@ async function main(): Promise<void> {
 	}
 }
 
-main().catch((err: unknown) => {
-	console.error('steam-auth failed: ' + (err instanceof Error ? err.message : String(err)));
-	process.exit(1);
-});
+// Tests import this module for parseArgs/promptOutput without running the
+// login flow: main runs only when the file is the CLI entrypoint.
+const invokedAsMain = (() => {
+	try {
+		const entry = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : '';
+		return import.meta.url === entry;
+	} catch {
+		return false;
+	}
+})();
+if (invokedAsMain) {
+	main().catch((err: unknown) => {
+		console.error('steam-auth failed: ' + (err instanceof Error ? err.message : String(err)));
+		process.exit(1);
+	});
+}

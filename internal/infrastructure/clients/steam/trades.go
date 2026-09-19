@@ -57,15 +57,36 @@ func normalizeTradeAsset(a rawTradeAsset) domainsteam.TradeAsset {
 	}
 }
 
-// fetchTrades pages trade history (max 100 per call) until Steam reports
-// no more, pages stop advancing, or the page cap hits. Failed trades are
-// included: exclusion would hide evidence a later reconciliation needs.
-func (c *Client) fetchTrades(ctx context.Context, since time.Time) ([]domainsteam.TradeRecord, bool, error) {
+// tradeResume is the provider offset for continuing a MaxPages-capped
+// trade walk: the API pages backward from (time, id).
+type tradeResume struct {
+	AfterTime time.Time `json:"after_time"`
+	AfterID   string    `json:"after_id"`
+}
+
+// fetchTrades pages trade history (max 100 per call) from the newest page
+// backwards until Steam reports no more, the watermark is reached, pages
+// stop advancing, or the page cap hits. start resumes a capped walk (nil
+// starts at the newest page); stopBefore ends a fresh walk as complete
+// once a page reaches already-covered territory (zero disables the stop).
+// start_after_* are backward-pagination anchors, so the newest imported
+// timestamp must never seed them — newness is detected by walking from
+// the top instead. Failed trades are included: exclusion would hide
+// evidence a later reconciliation needs. Incomplete walks return the
+// offset to resume from (nil unless the page cap hit).
+func (c *Client) fetchTrades(ctx context.Context, start *tradeResume, stopBefore time.Time) ([]domainsteam.TradeRecord, bool, *tradeResume, error) {
 	const pageSize = 100
 	var all []domainsteam.TradeRecord
 	seen := map[string]bool{}
-	afterTime := since.Unix()
-	afterID := ""
+	var afterTime int64
+	var afterID string
+	if start != nil {
+		afterTime = start.AfterTime.Unix()
+		afterID = start.AfterID
+	}
+	// A resumed walk continues below the watermark, so the watermark
+	// stop applies to fresh walks only; otherwise it would fire at once.
+	resume := start != nil
 	for page := 0; page < c.cfg.MaxPages; page++ {
 		q := url.Values{
 			"max_trades":       {"100"},
@@ -82,11 +103,11 @@ func (c *Client) fetchTrades(ctx context.Context, since time.Time) ([]domainstea
 		}
 		var env tradeHistoryPage
 		if err := c.getStore(ctx, "/IEconService/GetTradeHistory/v1/", q, &env); err != nil {
-			return all, false, err
+			return all, false, nil, err
 		}
 		trades := env.Response.Trades
 		if len(trades) == 0 {
-			return all, true, nil
+			return all, true, nil, nil
 		}
 		for _, t := range trades {
 			id := strVal(t.TradeID)
@@ -112,9 +133,34 @@ func (c *Client) fetchTrades(ctx context.Context, since time.Time) ([]domainstea
 				afterTime = ts
 			}
 		}
+		if !resume && !stopBefore.IsZero() {
+			if min := pageMinTradeTime(trades); !min.IsZero() && !min.After(stopBefore.Add(time.Second)) {
+				return all, true, nil, nil
+			}
+		}
 		if !env.Response.More {
-			return all, true, nil
+			return all, true, nil, nil
 		}
 	}
-	return all, false, nil
+	if afterID == "" && afterTime == 0 {
+		// Capped without any consumable offset: nothing to resume from.
+		return all, false, nil, nil
+	}
+	return all, false, &tradeResume{AfterTime: time.Unix(afterTime, 0).UTC(), AfterID: afterID}, nil
+}
+
+// pageMinTradeTime returns the oldest parseable trade timestamp in raw
+// rows (zero when none parse, which must never trigger a watermark stop).
+func pageMinTradeTime(trades []rawTrade) time.Time {
+	min := time.Time{}
+	for _, t := range trades {
+		at := parseSteamTime(strVal(t.TimeInit))
+		if at.IsZero() {
+			continue
+		}
+		if min.IsZero() || at.Before(min) {
+			min = at
+		}
+	}
+	return min
 }

@@ -29,22 +29,53 @@ func (c *SteamAuthClient) Refresh(ctx context.Context) ([]*http.Cookie, error) {
 // AuthenticatedClient returns an HTTP client whose transport attaches jar
 // cookies (allowlisted Steam hosts only) and retries once after a refresh
 // on authentication failure. The jar is shared with GetWebCookies.
+// Redirects are constrained to the allowlist so refresh-token transfers
+// cannot replay credentials to an off-Steam destination.
 func (c *SteamAuthClient) AuthenticatedClient(ctx context.Context) (*http.Client, error) {
 	if _, err := c.GetWebCookies(ctx); err != nil {
 		return nil, err
 	}
+	auth := c
 	return &http.Client{
-		Transport: &authRetryTransport{base: doerTransport{c.httpClient}, auth: c},
+		Transport: &authRetryTransport{base: doerTransport{doer: c.httpClient, check: c.allowlisted}, auth: c},
 		Jar:       c.jarForClient(),
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			if !auth.allowlisted(req.URL.String()) {
+				return steamErr("auth", fmt.Errorf("redirect outside allowlist: %s", redactURL(req.URL.String())))
+			}
+			return nil
+		},
 	}, nil
 }
 
-// doerTransport adapts the testable HTTPDoer to http.RoundTripper.
-type doerTransport struct{ doer HTTPDoer }
+// doerTransport adapts the testable HTTPDoer to http.RoundTripper. When
+// the doer is a plain *http.Client, redirects it would follow internally
+// are constrained by check (the auth allowlist): without this, a 307/308
+// would replay request headers to an off-allowlist host before the outer
+// client's CheckRedirect ever sees the hop.
+type doerTransport struct {
+	doer  HTTPDoer
+	check func(string) bool
+}
 
 func (t doerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.doer == nil {
 		return http.DefaultTransport.RoundTrip(req)
+	}
+	if hc, ok := t.doer.(*http.Client); ok && t.check != nil {
+		guarded := *hc
+		prev := guarded.CheckRedirect
+		check := t.check
+		guarded.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if !check(req.URL.String()) {
+				return steamErr("auth", fmt.Errorf("redirect outside allowlist: %s", redactURL(req.URL.String())))
+			}
+			if prev != nil {
+				return prev(req, via)
+			}
+			return nil
+		}
+		return guarded.Do(req)
 	}
 	return t.doer.Do(req)
 }
@@ -84,6 +115,16 @@ func (t *authRetryTransport) RoundTrip(req *http.Request) (*http.Response, error
 		return nil, steamErr("auth", fmt.Errorf("refresh before retry failed: %w", err))
 	}
 	retry := req.Clone(req.Context())
+	// Drop the stale Cookie header: the refreshed jar owns cookies now.
+	// Re-attach fresh cookies for the retry target so the retry never
+	// replays the rejected cookie.
+	retry.Header.Del("Cookie")
+	if jar := t.auth.jarForClient(); jar != nil {
+		retry.Header.Set("Cookie", strings.Join(cookieHeader(jar.Cookies(retry.URL)), "; "))
+		if retry.Header.Get("Cookie") == "" {
+			retry.Header.Del("Cookie")
+		}
+	}
 	if req.Body != nil {
 		if req.GetBody == nil {
 			return nil, steamErr("auth", fmt.Errorf("cannot retry request with consumed body"))
@@ -103,6 +144,18 @@ func (t *authRetryTransport) RoundTrip(req *http.Request) (*http.Response, error
 		return nil, steamErr("auth", fmt.Errorf("still unauthenticated after refresh"))
 	}
 	return resp2, nil
+}
+
+// cookieHeader renders jar cookies for a retry request.
+func cookieHeader(cookies []*http.Cookie) []string {
+	out := make([]string, 0, len(cookies))
+	for _, ck := range cookies {
+		if ck == nil || ck.Name == "" {
+			continue
+		}
+		out = append(out, ck.Name+"="+ck.Value)
+	}
+	return out
 }
 
 // isAuthFailure conservatively detects unauthenticated sessions: 401/403,

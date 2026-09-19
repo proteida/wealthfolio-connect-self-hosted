@@ -292,21 +292,35 @@ func parseSteamTime(s string) time.Time {
 }
 
 // fetchHistory walks inventory history from the newest page backwards,
-// following the returned cursor exactly. startTime bounds the import when
-// set (>0). It returns events newest-first, the description map, and
-// whether the range completed (false on page failure, cursor stall or page
-// cap: callers must not treat the result as exhaustive).
-func (c *Client) fetchHistory(ctx context.Context, startTime int64) ([]historyEvent, map[string]historyDesc, bool, error) {
+// following the returned cursor exactly. start resumes a MaxPages-capped
+// walk from a previously returned provider cursor (nil starts at the
+// newest page); stopBefore ends the walk as complete once a page reaches
+// already-covered territory (zero disables the stop). It returns events
+// newest-first, the description map, whether the range completed (false
+// on page failure, cursor stall or page cap), and the provider cursor to
+// resume from when the page cap hit (nil otherwise: callers must persist
+// it, or the next sync restarts at the newest page forever).
+//
+// start_time is deliberately never sent: it is a backward-pagination
+// anchor, so seeding it with the newest imported timestamp would skip
+// newer events. Newness is detected by walking from the top and stopping
+// at the watermark instead.
+func (c *Client) fetchHistory(ctx context.Context, start *historyCursor, stopBefore time.Time) ([]historyEvent, map[string]historyDesc, bool, *historyCursor, error) {
 	var all []historyEvent
 	descs := map[string]historyDesc{}
 	var cursor *historyCursor
+	if start != nil && !start.empty() {
+		cp := *start
+		cursor = &cp
+	}
+	// A resumed walk continues below the watermark, so the watermark
+	// stop applies to fresh walks only; otherwise it would fire at once.
+	resume := cursor != nil
 	seenCursor := map[string]bool{}
 	seenEvents := map[string]bool{}
+	var next *historyCursor
 	for page := 0; page < c.cfg.MaxPages; page++ {
 		q := url.Values{"ajax": {"1"}, "app[]": {"730"}}
-		if startTime > 0 {
-			q.Set("start_time", strconv.FormatInt(startTime, 10))
-		}
 		if cursor != nil {
 			for k, v := range cursor.values() {
 				q[k] = v
@@ -314,14 +328,17 @@ func (c *Client) fetchHistory(ctx context.Context, startTime int64) ([]historyEv
 		}
 		var env historyPage
 		if err := c.getCommunity(ctx, "/my/inventoryhistory/", q, &env); err != nil {
-			return all, descs, false, err
+			return all, descs, false, nil, err
+		}
+		if !truthy(env.Success) {
+			return all, descs, false, nil, steamErr("inventory history", fmt.Errorf("success=false"))
 		}
 		for k, d := range parseHistoryDescs(env.Descriptions) {
 			descs[k] = d
 		}
 		rows := parseHistoryRows(env.HTML, descs)
 		if len(rows) == 0 {
-			return all, descs, true, nil
+			return all, descs, true, nil, nil
 		}
 		for _, ev := range rows {
 			if seenEvents[ev.ExternalID] {
@@ -330,18 +347,42 @@ func (c *Client) fetchHistory(ctx context.Context, startTime int64) ([]historyEv
 			seenEvents[ev.ExternalID] = true
 			all = append(all, ev)
 		}
+		if !resume && !stopBefore.IsZero() {
+			// Reached already-covered territory on a fresh walk:
+			// everything newer is imported, nothing older is needed.
+			// Zero means no parseable timestamps: never stop on it.
+			if min := pageMinTime(rows); !min.IsZero() && !min.After(stopBefore.Add(time.Second)) {
+				return all, descs, true, nil, nil
+			}
+		}
 		if len(env.Cursor) == 0 || string(env.Cursor) == "null" {
-			return all, descs, true, nil
+			return all, descs, true, nil, nil
 		}
-		var next historyCursor
-		if err := json.Unmarshal(env.Cursor, &next); err != nil || next.empty() {
-			return all, descs, false, nil
+		var nxt historyCursor
+		if err := json.Unmarshal(env.Cursor, &nxt); err != nil || nxt.empty() {
+			return all, descs, false, nil, nil
 		}
-		if seenCursor[next.key()] {
-			return all, descs, false, nil
+		if seenCursor[nxt.key()] {
+			return all, descs, false, nil, nil
 		}
-		seenCursor[next.key()] = true
-		cursor = &next
+		seenCursor[nxt.key()] = true
+		cp := nxt
+		cursor, next = &cp, &cp
 	}
-	return all, descs, false, nil
+	return all, descs, false, next, nil
+}
+
+// pageMinTime returns the oldest non-zero timestamp in rows (zero when
+// none parse, which must never trigger a watermark stop).
+func pageMinTime(rows []historyEvent) time.Time {
+	min := time.Time{}
+	for _, ev := range rows {
+		if ev.Timestamp.IsZero() {
+			continue
+		}
+		if min.IsZero() || ev.Timestamp.Before(min) {
+			min = ev.Timestamp
+		}
+	}
+	return min
 }

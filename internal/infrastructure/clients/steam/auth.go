@@ -125,11 +125,24 @@ func NewSteamAuthClient(steamID, refreshToken string, httpClient HTTPDoer, final
 		finalizeURL = finalizeLoginURL
 	}
 	jar, _ := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
-	return &SteamAuthClient{
+	c := &SteamAuthClient{
 		steamID: steamID, refreshToken: refreshToken,
 		httpClient: httpClient, finalizeURL: finalizeURL, jar: jar,
 		log: zerolog.Nop(), cookieTTL: 10 * time.Minute,
 	}
+	if c.httpClient == nil {
+		inner := c
+		c.httpClient = &http.Client{
+			Timeout: 15 * time.Second,
+			CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+				if !inner.allowlisted(req.URL.String()) {
+					return steamErr("auth", fmt.Errorf("redirect outside allowlist: %s", redactURL(req.URL.String())))
+				}
+				return nil
+			},
+		}
+	}
+	return c
 }
 
 // SetLogger attaches structured logging. Secrets are never logged; a
@@ -165,11 +178,20 @@ func newSessionID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// allowlisted reports whether a URL targets Steam auth infrastructure.
+// allowlisted reports whether a URL targets Steam auth infrastructure over
+// HTTPS. Both host and scheme are constrained: tokens never leave Steam,
+// and never travel in cleartext.
 func (c *SteamAuthClient) allowlisted(rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return false
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		// Tests use httptest http:// URLs via an explicit allowHosts
+		// override; production Steam traffic must be https.
+		if !isTestHostOverride(c.allowHosts, strings.ToLower(u.Hostname())) {
+			return false
+		}
 	}
 	hosts := c.allowHosts
 	if len(hosts) == 0 {
@@ -178,6 +200,17 @@ func (c *SteamAuthClient) allowlisted(rawURL string) bool {
 	host := strings.ToLower(u.Hostname())
 	for _, h := range hosts {
 		if host == h || strings.HasSuffix(host, "."+h) {
+			return true
+		}
+	}
+	return false
+}
+
+// isTestHostOverride reports whether host was explicitly allowed via
+// allowHosts (tests only): httptest servers are http, not https.
+func isTestHostOverride(allowHosts []string, host string) bool {
+	for _, h := range allowHosts {
+		if host == strings.ToLower(h) || strings.HasSuffix(host, "."+strings.ToLower(h)) {
 			return true
 		}
 	}
@@ -403,6 +436,42 @@ func classifyRefreshError(v any) error {
 	return steamErr("auth finalizelogin", fmt.Errorf("%v", v))
 }
 
+// do executes req through the configured doer while enforcing the
+// redirect allowlist even when the doer is a plain *http.Client, whose
+// own CheckRedirect would otherwise follow redirects — including 307/308
+// replays of the refresh-token form — before any outer policy sees them.
+// The caller's client is never mutated: a guarded shallow copy carries
+// the policy for this call only.
+func (c *SteamAuthClient) do(req *http.Request) (*http.Response, error) {
+	hc, ok := c.httpClient.(*http.Client)
+	if !ok {
+		return c.httpClient.Do(req)
+	}
+	guarded := *hc
+	inner := c
+	prev := guarded.CheckRedirect
+	guarded.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if !inner.allowlisted(req.URL.String()) {
+			return steamErr("auth", fmt.Errorf("redirect outside allowlist: %s", redactURL(req.URL.String())))
+		}
+		if prev != nil {
+			return prev(req, via)
+		}
+		return nil
+	}
+	resp, err := guarded.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp != nil && resp.Request != nil && resp.Request.URL != nil &&
+		!inner.allowlisted(resp.Request.URL.String()) {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		_ = resp.Body.Close()
+		return nil, steamErr("auth", fmt.Errorf("response outside allowlist: %s", redactURL(resp.Request.URL.String())))
+	}
+	return resp, nil
+}
+
 // postForm POSTs multipart form fields and decodes a JSON body into out.
 func (c *SteamAuthClient) postForm(ctx context.Context, rawURL string, form map[string]string, headers map[string]string, out any) error {
 	_, _, err := c.postFormRaw(ctx, rawURL, form, headers, out)
@@ -433,9 +502,9 @@ func (c *SteamAuthClient) postFormRaw(ctx context.Context, rawURL string, form m
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
-		return nil, 0, steamErr("auth http", err)
+		return nil, 0, steamErr("auth http", sanitizeHTTPError(err))
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

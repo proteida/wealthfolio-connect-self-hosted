@@ -44,8 +44,8 @@ func (SteamSnapshotAssetPO) TableName() string { return "steam_snapshot_assets" 
 // SteamEventPO is one normalized inventory-history row. Matched flags rows
 // consumed by a reconciliation; unmatched rows stay for later runs.
 type SteamEventPO struct {
-	SteamID        string    `gorm:"column:steam_id;type:text;not null;index:steam_events_steam_idx"`
-	ExternalID     string    `gorm:"column:external_id;type:text;not null;uniqueIndex:steam_events_uk"`
+	SteamID        string    `gorm:"column:steam_id;type:text;not null;index:steam_events_steam_idx;uniqueIndex:steam_events_steam_uk,priority:1"`
+	ExternalID     string    `gorm:"column:external_id;type:text;not null;uniqueIndex:steam_events_steam_uk,priority:2"`
 	Timestamp      time.Time `gorm:"column:ts;not null"`
 	Kind           string    `gorm:"column:kind;type:text;not null;default:''"`
 	MarketHashName string    `gorm:"column:market_hash_name;type:text;not null;default:''"`
@@ -59,8 +59,8 @@ func (SteamEventPO) TableName() string { return "steam_events" }
 
 // SteamMarketTxPO is one normalized Community Market row.
 type SteamMarketTxPO struct {
-	SteamID        string    `gorm:"column:steam_id;type:text;not null;index:steam_market_txs_steam_idx"`
-	ExternalID     string    `gorm:"column:external_id;type:text;not null;uniqueIndex:steam_market_txs_uk"`
+	SteamID        string    `gorm:"column:steam_id;type:text;not null;index:steam_market_txs_steam_idx;uniqueIndex:steam_market_txs_steam_uk,priority:1"`
+	ExternalID     string    `gorm:"column:external_id;type:text;not null;uniqueIndex:steam_market_txs_steam_uk,priority:2"`
 	Type           string    `gorm:"column:type;type:text;not null;default:''"`
 	Timestamp      time.Time `gorm:"column:ts;not null"`
 	MarketHashName string    `gorm:"column:market_hash_name;type:text;not null;default:''"`
@@ -77,8 +77,8 @@ func (SteamMarketTxPO) TableName() string { return "steam_market_transactions" }
 
 // SteamTradePO is one normalized trade with both asset sides as JSON.
 type SteamTradePO struct {
-	SteamID      string    `gorm:"column:steam_id;type:text;not null;index:steam_trades_steam_idx"`
-	TradeID      string    `gorm:"column:trade_id;type:text;not null;uniqueIndex:steam_trades_uk"`
+	SteamID      string    `gorm:"column:steam_id;type:text;not null;index:steam_trades_steam_idx;uniqueIndex:steam_trades_steam_uk,priority:1"`
+	TradeID      string    `gorm:"column:trade_id;type:text;not null;uniqueIndex:steam_trades_steam_uk,priority:2"`
 	Timestamp    time.Time `gorm:"column:ts;not null"`
 	OtherSteamID string    `gorm:"column:other_steam_id;type:text;not null;default:''"`
 	Status       string    `gorm:"column:status;type:text;not null;default:''"`
@@ -91,8 +91,8 @@ func (SteamTradePO) TableName() string { return "steam_trades" }
 
 // SteamLotPO is one acquisition lot for indistinguishable items.
 type SteamLotPO struct {
-	SteamID        string    `gorm:"column:steam_id;type:text;not null;index:steam_lots_steam_idx"`
-	ID             string    `gorm:"column:id;type:text;not null;uniqueIndex:steam_lots_uk,priority:1"`
+	SteamID        string    `gorm:"column:steam_id;type:text;not null;index:steam_lots_steam_idx;uniqueIndex:steam_lots_steam_uk,priority:1"`
+	ID             string    `gorm:"column:id;type:text;not null;uniqueIndex:steam_lots_steam_uk,priority:2"`
 	MarketHashName string    `gorm:"column:market_hash_name;type:text;not null;default:''"`
 	Quantity       int       `gorm:"column:quantity;not null;default:0"`
 	AcquiredAt     time.Time `gorm:"column:acquired_at;not null"`
@@ -108,8 +108,8 @@ func (SteamLotPO) TableName() string { return "steam_acquisition_lots" }
 // SteamAcquisitionPO binds one assetid to its acquisition evidence. Cost
 // NULL means unknown (never zero, which means known-free).
 type SteamAcquisitionPO struct {
-	SteamID         string     `gorm:"column:steam_id;type:text;not null;index:steam_acquisitions_steam_idx"`
-	AssetID         string     `gorm:"column:assetid;type:text;not null;uniqueIndex:steam_acquisitions_uk"`
+	SteamID         string     `gorm:"column:steam_id;type:text;not null;index:steam_acquisitions_steam_idx;uniqueIndex:steam_acquisitions_steam_uk,priority:1"`
+	AssetID         string     `gorm:"column:assetid;type:text;not null;uniqueIndex:steam_acquisitions_steam_uk,priority:2"`
 	MarketHashName  string     `gorm:"column:market_hash_name;type:text;not null;default:''"`
 	AcquiredAt      *time.Time `gorm:"column:acquired_at"`
 	Type            string     `gorm:"column:type;type:text;not null;default:''"`
@@ -191,7 +191,7 @@ func (r *steamAssetRepo) RecordEvents(ctx context.Context, steamID string, event
 			AssetID: ev.AssetID, Matched: ev.Matched,
 		}
 		if err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "external_id"}},
+			Columns:   []clause.Column{{Name: "steam_id"}, {Name: "external_id"}},
 			DoNothing: true,
 		}).Create(&po).Error; err != nil {
 			return fmt.Errorf("steam events record: %w", err)
@@ -242,7 +242,7 @@ func (r *steamAssetRepo) SaveMarketTransactions(ctx context.Context, steamID str
 			Quantity: tx.Quantity, Gross: tx.Gross, Net: tx.Net, Currency: tx.Currency,
 		}
 		if err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "external_id"}},
+			Columns:   []clause.Column{{Name: "steam_id"}, {Name: "external_id"}},
 			DoNothing: true,
 		}).Create(&po).Error; err != nil {
 			return fmt.Errorf("steam market txs save: %w", err)
@@ -262,7 +262,7 @@ func (r *steamAssetRepo) SaveTrades(ctx context.Context, steamID string, trades 
 			GivenJSON: given, ReceivedJSON: received,
 		}
 		if err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "trade_id"}},
+			Columns:   []clause.Column{{Name: "steam_id"}, {Name: "trade_id"}},
 			DoNothing: true,
 		}).Create(&po).Error; err != nil {
 			return fmt.Errorf("steam trades save: %w", err)
@@ -271,18 +271,12 @@ func (r *steamAssetRepo) SaveTrades(ctx context.Context, steamID string, trades 
 	return nil
 }
 
-// SaveLots replaces the lot set for a market_hash_name.
+// SaveLots replaces the whole lot set: stale names absent from the new set
+// are cleared so sold lots cannot linger.
 func (r *steamAssetRepo) SaveLots(ctx context.Context, steamID string, lots []repository.SteamLotRow) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		names := map[string]bool{}
-		for _, l := range lots {
-			names[l.MarketHashName] = true
-		}
-		for name := range names {
-			if err := tx.Where("steam_id = ? AND market_hash_name = ?", steamID, name).
-				Delete(&SteamLotPO{}).Error; err != nil {
-				return fmt.Errorf("steam lots clear: %w", err)
-			}
+		if err := tx.Where("steam_id = ?", steamID).Delete(&SteamLotPO{}).Error; err != nil {
+			return fmt.Errorf("steam lots clear: %w", err)
 		}
 		for _, l := range lots {
 			po := SteamLotPO{
@@ -298,10 +292,25 @@ func (r *steamAssetRepo) SaveLots(ctx context.Context, steamID string, lots []re
 	})
 }
 
-// SaveAcquisitions replaces per-asset acquisition records.
+// SaveAcquisitions upserts per-asset acquisition records but never
+// downgrades: existing exact/high evidence survives a later sync with
+// weaker or missing provenance (e.g. a temporary Steam failure).
 func (r *steamAssetRepo) SaveAcquisitions(ctx context.Context, steamID string, acquisitions []repository.SteamAcquisitionRow) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, a := range acquisitions {
+			var existing SteamAcquisitionPO
+			err := tx.Where("steam_id = ? AND assetid = ?", steamID, a.AssetID).First(&existing).Error
+			if err == nil {
+				if confidenceRank(existing.MatchConfidence) > confidenceRank(a.MatchConfidence) {
+					continue
+				}
+				if confidenceRank(existing.MatchConfidence) == confidenceRank(a.MatchConfidence) &&
+					!strongerOrEqualAcquisition(existing, a) {
+					continue
+				}
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("steam acquisitions read: %w", err)
+			}
 			po := SteamAcquisitionPO{
 				SteamID: steamID, AssetID: a.AssetID, MarketHashName: a.MarketHashName,
 				AcquiredAt: a.AcquiredAt, Type: a.Type, Reference: a.Reference,
@@ -309,7 +318,7 @@ func (r *steamAssetRepo) SaveAcquisitions(ctx context.Context, steamID string, a
 				MatchMethod: a.MatchMethod, MatchConfidence: a.MatchConfidence,
 			}
 			if err := tx.Clauses(clause.OnConflict{
-				Columns: []clause.Column{{Name: "assetid"}},
+				Columns: []clause.Column{{Name: "steam_id"}, {Name: "assetid"}},
 				DoUpdates: clause.AssignmentColumns([]string{
 					"market_hash_name", "acquired_at", "type", "reference",
 					"cost_basis", "cost_currency", "match_method", "match_confidence",
@@ -322,12 +331,55 @@ func (r *steamAssetRepo) SaveAcquisitions(ctx context.Context, steamID string, a
 	})
 }
 
-// CurrentAssets returns asset states from the newest snapshot joined with
-// acquisition records.
+// confidenceRank orders match confidence so stored evidence is only
+// replaced by equal-or-stronger evidence.
+func confidenceRank(conf string) int {
+	switch conf {
+	case "exact":
+		return 4
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// strongerOrEqualAcquisition prefers rows that actually carry evidence
+// (timestamp, cost, reference) when confidence ties.
+func strongerOrEqualAcquisition(existing SteamAcquisitionPO, next repository.SteamAcquisitionRow) bool {
+	score := func(acquiredAt *time.Time, cost *float64, ref string) int {
+		n := 0
+		if acquiredAt != nil && !acquiredAt.IsZero() {
+			n++
+		}
+		if cost != nil {
+			n++
+		}
+		if ref != "" {
+			n++
+		}
+		return n
+	}
+	return score(next.AcquiredAt, next.CostBasis, next.Reference) >=
+		score(existing.AcquiredAt, existing.CostBasis, existing.Reference)
+}
+
+// CurrentAssets returns asset states from the newest complete snapshot
+// joined with acquisition records. Partial snapshots are ignored for the
+// join: an asset omitted by a truncated page keeps its persisted
+// acquisition evidence instead of losing it until it reappears.
+//
+// NOTE: assets first discovered in a partial sync are absent from the
+// complete baseline by design. Fetch restores their evidence through
+// AcquisitionsForAssets instead, which is snapshot-independent.
 func (r *steamAssetRepo) CurrentAssets(ctx context.Context, steamID string) ([]repository.SteamAssetState, error) {
 	var snap SteamSnapshotPO
 	err := r.db.WithContext(ctx).
-		Where("steam_id = ?", steamID).
+		Where("steam_id = ? AND complete = ?", steamID, true).
 		Order("taken_at DESC").First(&snap).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, repository.ErrNotFound
@@ -366,6 +418,30 @@ func (r *steamAssetRepo) CurrentAssets(ctx context.Context, steamID string) ([]r
 			st.MatchConfidence = a.MatchConfidence
 		}
 		out = append(out, st)
+	}
+	return out, nil
+}
+
+// AcquisitionsForAssets returns stored acquisition records for the given
+// asset IDs, independently of any snapshot baseline.
+func (r *steamAssetRepo) AcquisitionsForAssets(ctx context.Context, steamID string, assetIDs []string) ([]repository.SteamAcquisitionRow, error) {
+	if len(assetIDs) == 0 {
+		return nil, nil
+	}
+	var pos []SteamAcquisitionPO
+	if err := r.db.WithContext(ctx).
+		Where("steam_id = ? AND assetid IN ?", steamID, assetIDs).
+		Find(&pos).Error; err != nil {
+		return nil, fmt.Errorf("steam acquisitions lookup: %w", err)
+	}
+	out := make([]repository.SteamAcquisitionRow, 0, len(pos))
+	for _, po := range pos {
+		out = append(out, repository.SteamAcquisitionRow{
+			AssetID: po.AssetID, MarketHashName: po.MarketHashName,
+			AcquiredAt: po.AcquiredAt, Type: po.Type, Reference: po.Reference,
+			CostBasis: po.CostBasis, CostCurrency: po.CostCurrency,
+			MatchMethod: po.MatchMethod, MatchConfidence: po.MatchConfidence,
+		})
 	}
 	return out, nil
 }

@@ -134,13 +134,13 @@ var _ = Describe("Configured crypto registration", func() {
 	It("registers Steam only when STEAM_ID is configured", func() {
 		cfg := sampleCfg()
 		Expect(clientIDs(clients.NewCryptoClients(cfg, zerolog.Nop(), nil, nil, nil, nil, nil))).NotTo(ContainElement("steam"))
-		cfg.Steam.SteamID = "76561198000000000"
+		cfg.Steam.SteamID = "76561199495663064"
 		Expect(clientIDs(clients.NewCryptoClients(cfg, zerolog.Nop(), nil, nil, nil, nil, nil))).To(ContainElement("steam"))
 	})
 	It("warns when Steam lacks a session but still registers", func() {
 		var logs bytes.Buffer
 		cfg := sampleCfg()
-		cfg.Steam.SteamID = "76561198000000000"
+		cfg.Steam.SteamID = "76561199495663064"
 		Expect(clientIDs(clients.NewCryptoClients(cfg, zerolog.New(&logs), nil, nil, nil, nil, nil))).To(ContainElement("steam"))
 		Expect(logs.String()).To(ContainSubstring("only public inventory"))
 		cfg.Steam.Session = "sessionid=x"

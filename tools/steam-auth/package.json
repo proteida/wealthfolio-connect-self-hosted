@@ -11,7 +11,8 @@
     "steam-auth": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "tsc -p tsconfig.json --noEmit --strict"
+    "lint": "tsc -p tsconfig.json --noEmit --strict",
+    "test": "npm run typecheck && node --import tsx --test test/cli.test.ts"
   },
   "dependencies": {
     "steam-session": "^1.9.4"

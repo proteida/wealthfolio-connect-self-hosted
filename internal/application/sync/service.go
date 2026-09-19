@@ -185,6 +185,21 @@ func (s *Service) syncOne(ctx context.Context, c domainsync.BrokerClient) error 
 			return fmt.Errorf("upsert activities: %w", err)
 		}
 	}
+	// Retractions let value-filtered clients (e.g. Steam dust) purge stale
+	// rows that UpsertBatch would otherwise accumulate forever. Only the
+	// IDs the client names are deleted; incremental-history clients leave
+	// the field nil so their past rows are untouched. Retractions are
+	// skipped for partial snapshots: a truncated upstream page cannot
+	// tell filtered items from items lost to the failure, and deleting
+	// their activities would destroy valid history.
+	for accID, sourceIDs := range snap.RetractedActivities {
+		if disabled[accID] || len(sourceIDs) == 0 || partialAccounts[accID] {
+			continue
+		}
+		if err := s.activities.Delete(ctx, accID, sourceIDs); err != nil {
+			return fmt.Errorf("delete retracted activities: %w", err)
+		}
+	}
 	for _, acc := range enabled {
 		if acc.LastTxSync != nil {
 			if err := s.accounts.UpdateSyncStatus(ctx, acc.ID, acc.LastTxSync, nil); err != nil {

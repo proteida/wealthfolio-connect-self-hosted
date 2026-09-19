@@ -70,6 +70,12 @@ type futuLeg struct {
 
 // MigrateData runs row-level data migrations after AutoMigrate.
 func (Migrator) MigrateData(ctx context.Context, db *gorm.DB) error {
+	if err := migrateSteamAccountIndexes(ctx, db); err != nil {
+		return fmt.Errorf("steam account indexes: %w", err)
+	}
+	if err := migrateSteamPriceCurrency(ctx, db); err != nil {
+		return fmt.Errorf("steam price currency: %w", err)
+	}
 	if err := migrateFutuUniversalAccounts(ctx, db); err != nil {
 		return fmt.Errorf("futu universal accounts: %w", err)
 	}
