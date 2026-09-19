@@ -112,8 +112,9 @@ func activityConflictColumns() []string {
 // re-sync. A match on a different identity is ambiguous: the upstream may
 // have reprocessed the record under a new ID, or these may be genuinely
 // identical twin records (same economics, distinct IDs). Both rows are kept —
-// drops are never silent — and the newcomer is flagged for human review; the
-// first identity wins the fingerprint so every twin resolves consistently.
+// drops are never silent — and the newcomer is flagged for human review. The
+// lookup orders by identity so the canonical row is deterministic across
+// re-syncs; within a batch the first item wins.
 func applyFingerprintIdentity(item *brokerage.Activity, known map[string]string) {
 	if item.SourceFingerprint == "" {
 		return
@@ -137,9 +138,11 @@ func (r *activityRepo) UpsertBatch(ctx context.Context, accountID string, items 
 		return nil
 	}
 	// Fingerprint reconciliation keeps paged importers idempotent when the
-	// upstream re-keys a transaction between pages: a known fingerprint
-	// reuses the previously assigned source_record_id instead of inserting
-	// a duplicate row.
+	// upstream re-keys a transaction between pages. Ordering by identity
+	// makes the canonical row per fingerprint deterministic across runs:
+	// without it, re-syncs could resolve a persisted collision to different
+	// rows and flap the review flag that keep-and-flag relies on (the flag
+	// itself is refreshed by the upsert conflict columns).
 	fingerprints := make([]string, 0, len(items))
 	for _, it := range items {
 		if it.SourceFingerprint != "" {
@@ -152,6 +155,7 @@ func (r *activityRepo) UpsertBatch(ctx context.Context, accountID string, items 
 		err := r.db.WithContext(ctx).
 			Select("source_record_id", "source_fingerprint").
 			Where("account_id = ? AND source_fingerprint IN ?", accountID, fingerprints).
+			Order("source_record_id").
 			Find(&existing).Error
 		if err != nil {
 			return fmt.Errorf("activity fingerprint lookup: %w", err)

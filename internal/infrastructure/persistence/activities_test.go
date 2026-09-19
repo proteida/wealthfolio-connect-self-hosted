@@ -205,7 +205,7 @@ var _ = Describe("ActivityRepository", func() {
 	})
 
 	It("keeps a distinct identity and flags review when a SnapTrade ID changes but the fingerprint is stable", func() {
-		mock.ExpectQuery(rx(`SELECT "source_record_id","source_fingerprint" FROM "activities"`)).
+		mock.ExpectQuery(rx(`SELECT "source_record_id","source_fingerprint" FROM "activities"`) + ".*" + rx(`ORDER BY source_record_id`)).
 			WillReturnRows(sqlmock.NewRows([]string{"source_record_id", "source_fingerprint"}).
 				AddRow("snaptrade:old-id", "stable-fingerprint"))
 		mock.ExpectBegin()
